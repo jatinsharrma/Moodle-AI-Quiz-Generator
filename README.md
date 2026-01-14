@@ -15,16 +15,8 @@ AI-powered quiz question generator plugin for Moodle 4.0+ using Google Gemini 2.
 
 ```
 /home/ai/moodle/
-├── CLAUDE.md                    # Claude AI instructions and context
 ├── README.md                    # This file
 ├── .gitignore                   # Git ignore rules
-│
-├── docs/                        # Documentation
-│   ├── plan.md                 # Original development plan
-│   ├── PHP81_COMPATIBILITY.md  # PHP 8.1 compatibility report
-│   ├── PRIMARY_SUPPORTING_DOCS.md  # Guide to primary/supporting docs
-│   └── WORKFLOW_SUMMARY.md     # Complete user workflow documentation
-│
 ├── src/                         # Source code
 │   └── local/
 │       └── ai_quiz/            # Main plugin directory
@@ -45,10 +37,6 @@ AI-powered quiz question generator plugin for Moodle 4.0+ using Google Gemini 2.
 │           │   └── install.xml
 │           └── amd/            # JavaScript modules
 │
-├── test_gemini_api.php          # API key testing script
-├── test_php81_compat.sh         # PHP 8.1 compatibility checker
-├── working.py.bk                # Original Colab notebook (reference)
-└── venv/                        # Python virtual environment (if needed)
 ```
 
 ## Installation
