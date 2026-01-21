@@ -69,6 +69,8 @@ $string['medium'] = 'Medium';
 $string['hard'] = 'Hard';
 $string['generate'] = 'Generate Quiz';
 $string['numeric'] = 'Must be a number';
+$string['multiple_answer_count'] = 'Number of Multiple Answer Questions';
+$string['multiple_answer_count_help'] = 'Specify how many questions should have multiple correct answers. These questions use negative marking to prevent "select all" exploitation. Cannot exceed total question count.';
 
 // Results
 $string['generationresults'] = 'Quiz Generation Results';

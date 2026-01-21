@@ -177,11 +177,31 @@ if ($mform->is_cancelled()) {
             'hard' => $hardcount
         ];
 
+        // Multiple answer configuration
+        $multipleanswerconfig = null;
+        if (!empty($data->include_multiple_answer)) {
+            $macount = $data->multiple_answer_count;
+            $maeasycount = round(($data->ma_easy_pct / 100) * $macount);
+            $mamediumcount = round(($data->ma_medium_pct / 100) * $macount);
+            $mahardcount = $macount - $maeasycount - $mamediumcount;
+
+            $multipleanswerconfig = [
+                'count' => $macount,
+                'difficulty' => [
+                    'easy' => $maeasycount,
+                    'medium' => $mamediumcount,
+                    'hard' => $mahardcount
+                ]
+            ];
+        }
+
         $quizdata = $generator->create_quiz(
             $primarydocs,
             $supportingdocs,
             $websiteurls,
-            $data->numquestions
+            $data->numquestions,
+            $difficultymix,
+            $multipleanswerconfig
         );
 
         // Clean up temp files

@@ -308,8 +308,10 @@ class question_bank_helper {
 
         // Calculate fraction for each correct answer
         // For multiple correct answers, distribute 1.0 across all correct answers
+        // IMPORTANT: Use negative marking for wrong answers to prevent "select all" exploit
         $numcorrect = count($correctanswers);
         $fractionpercorrect = 1.0 / $numcorrect;
+        $ismultipleanswer = ($numcorrect > 1);
 
         $answerindex = 0;
         foreach ($answeroptions as $optionkey) {
@@ -321,9 +323,15 @@ class question_bank_helper {
                     'itemid' => 0
                 ];
 
-                // Set fraction (distribute 1.0 across correct answers, 0.0 for incorrect)
+                // Set fraction with negative marking for multiple answer questions
                 $iscorrect = in_array($optionkey, $correctanswers);
-                $question->fraction[$answerindex] = $iscorrect ? $fractionpercorrect : 0.0;
+                if ($ismultipleanswer) {
+                    // Multiple answer: correct = +fraction, wrong = -fraction (prevents "select all")
+                    $question->fraction[$answerindex] = $iscorrect ? $fractionpercorrect : -$fractionpercorrect;
+                } else {
+                    // Single answer: correct = 1.0, wrong = 0.0 (standard behavior)
+                    $question->fraction[$answerindex] = $iscorrect ? 1.0 : 0.0;
+                }
 
                 // Feedback for this answer
                 $question->feedback[$answerindex] = [

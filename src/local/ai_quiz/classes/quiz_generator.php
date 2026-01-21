@@ -160,7 +160,7 @@ class quiz_generator {
      * @param bool $primaryonly If true, questions must come from primary documents only
      * @return array Generated MCQs
      */
-    public function generate_mcqs($context, $numquestions = 20, $difficultymix = null, $primaryonly = false) {
+    public function generate_mcqs($context, $numquestions = 20, $difficultymix = null, $primaryonly = false, $multipleanswerconfig = null) {
         if ($difficultymix === null) {
             $difficultymix = [
                 'easy' => (int)($numquestions / 4),
@@ -187,7 +187,7 @@ class quiz_generator {
                        substr($context, -$takefromend);
         }
 
-        $prompt = $this->build_mcq_prompt($context, $numquestions, $difficultymix, $primaryonly);
+        $prompt = $this->build_mcq_prompt($context, $numquestions, $difficultymix, $primaryonly, $multipleanswerconfig);
 
         debugging('Generating ' . $numquestions . ' MCQs...', DEBUG_DEVELOPER);
 
@@ -205,9 +205,10 @@ class quiz_generator {
      * @param int $numquestions Number of questions
      * @param array $difficultymix Difficulty distribution
      * @param bool $primaryonly If true, emphasize primary document boundary
+     * @param array $multipleanswerconfig Multiple answer configuration
      * @return string Formatted prompt
      */
-    private function build_mcq_prompt($context, $numquestions, $difficultymix, $primaryonly = false) {
+    private function build_mcq_prompt($context, $numquestions, $difficultymix, $primaryonly = false, $multipleanswerconfig = null) {
         $timestamp = date('c');
 
         // Add primary document instruction if needed
@@ -223,6 +224,40 @@ CRITICAL SCOPE RESTRICTION:
 - Primary materials set the scope and boundary for quiz content
 
 SCOPE;
+        }
+
+        // Build answer type instruction based on configuration
+        $answertypeinstruction = '';
+        if ($multipleanswerconfig && $multipleanswerconfig['count'] > 0) {
+            $macount = $multipleanswerconfig['count'];
+            $singlecount = $numquestions - $macount;
+            $maeasy = $multipleanswerconfig['difficulty']['easy'];
+            $mamedium = $multipleanswerconfig['difficulty']['medium'];
+            $mahard = $multipleanswerconfig['difficulty']['hard'];
+
+            $answertypeinstruction = <<<ANSWERTYPE
+
+3. ANSWER TYPE VARIETY:
+   - Single Answer: {$singlecount} questions (only ONE correct option)
+   - Multiple Answer: {$macount} questions (TWO or more correct options, marked with "answer_type": "multiple")
+     * Multiple Answer Difficulty: {$maeasy} easy, {$mamedium} medium, {$mahard} hard
+   - For multiple answer questions:
+     * Clearly indicate which options are correct
+     * Use "Select all that apply" or similar phrasing in question text
+     * correct_answer field should be an array like ["A", "C"]
+
+ANSWERTYPE;
+        } else {
+            // No multiple answer config = ALL single answer questions
+            $answertypeinstruction = <<<ANSWERTYPE
+
+3. ANSWER TYPE:
+   - ALL questions must be Single Answer ONLY (only ONE correct option)
+   - Do NOT generate any multiple answer questions
+   - ALL questions should have "answer_type": "single"
+   - correct_answer field should be a single letter like "B", NOT an array
+
+ANSWERTYPE;
         }
 
         return <<<PROMPT
@@ -247,10 +282,7 @@ REQUIREMENTS:
    - Factual recall: 20%
    - Analysis/evaluation: 10%
 
-3. ANSWER TYPE VARIETY:
-   - 70% Single Answer: Only ONE correct option
-   - 30% Multiple Answer: TWO or more correct options (marked with "answer_type": "multiple")
-   - For multiple answer questions, clearly indicate which options are correct
+{$answertypeinstruction}
 
 4. QUALITY STANDARDS:
    - Each question has EXACTLY 4 options (A, B, C, D)
@@ -459,9 +491,11 @@ PROMPT;
      * @param array $supportingdocs Array of ['path' => string, 'pagerange' => ['from' => int, 'to' => int]]
      * @param array $websiteurls Array of website URLs
      * @param int $numquestions Number of questions to generate
+     * @param array $difficultymix Difficulty distribution ['easy' => int, 'medium' => int, 'hard' => int]
+     * @param array $multipleanswerconfig Multiple answer config ['count' => int, 'difficulty' => ['easy' => int, 'medium' => int, 'hard' => int]]
      * @return array Generated quiz data
      */
-    public function create_quiz($primarydocs = null, $supportingdocs = null, $websiteurls = null, $numquestions = 20) {
+    public function create_quiz($primarydocs = null, $supportingdocs = null, $websiteurls = null, $numquestions = 20, $difficultymix = null, $multipleanswerconfig = null) {
         $primaryparts = [];
         $supportingparts = [];
 
@@ -582,8 +616,20 @@ PROMPT;
 
         debugging("Context assembled: ~" . str_word_count($fullcontext) . " words", DEBUG_DEVELOPER);
 
+        // Set default difficulty mix if not provided
+        if ($difficultymix === null) {
+            $easycount = round(0.25 * $numquestions);
+            $mediumcount = round(0.50 * $numquestions);
+            $hardcount = $numquestions - $easycount - $mediumcount;
+            $difficultymix = [
+                'easy' => $easycount,
+                'medium' => $mediumcount,
+                'hard' => $hardcount
+            ];
+        }
+
         // Generate MCQs with primary document emphasis
-        $mcqs = $this->generate_mcqs($fullcontext, $numquestions, null, true);
+        $mcqs = $this->generate_mcqs($fullcontext, $numquestions, $difficultymix, true, $multipleanswerconfig);
 
         // Add source information to metadata
         $mcqs['metadata']['source_type'] = 'primary_documents';

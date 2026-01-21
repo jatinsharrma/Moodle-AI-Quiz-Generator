@@ -151,6 +151,47 @@ HTML;
         $mform->setDefault('medium_pct', 50);
         $mform->setDefault('hard_pct', 25);
 
+        // Multiple Answer Questions Configuration
+        $mform->addElement('header', 'multipleanswer_header', 'Multiple Answer Questions');
+
+        $mform->addElement('advcheckbox', 'include_multiple_answer',
+            'Include Multiple Answer Questions',
+            'Generate questions with multiple correct answers (with negative marking)');
+        $mform->setDefault('include_multiple_answer', 0);
+
+        // Number of multiple answer questions
+        $mform->addElement('text', 'multiple_answer_count',
+            'Number of Multiple Answer Questions', ['size' => 10]);
+        $mform->setType('multiple_answer_count', PARAM_INT);
+        $mform->setDefault('multiple_answer_count', 5);
+        $mform->addHelpButton('multiple_answer_count', 'multiple_answer_count', 'local_ai_quiz');
+        $mform->hideIf('multiple_answer_count', 'include_multiple_answer');
+
+        // Difficulty distribution for multiple answer questions
+        $mform->addElement('static', 'ma_difficulty_label', '',
+            '<strong>Difficulty Distribution for Multiple Answer Questions</strong><br>Specify percentages (must total 100%)');
+        $mform->hideIf('ma_difficulty_label', 'include_multiple_answer');
+
+        $madifficultygroup = [];
+        $madifficultygroup[] = $mform->createElement('text', 'ma_easy_pct', '', ['size' => 5]);
+        $madifficultygroup[] = $mform->createElement('static', 'ma_easy_label', '', '% Easy');
+        $madifficultygroup[] = $mform->createElement('text', 'ma_medium_pct', '', ['size' => 5]);
+        $madifficultygroup[] = $mform->createElement('static', 'ma_medium_label', '', '% Medium');
+        $madifficultygroup[] = $mform->createElement('text', 'ma_hard_pct', '', ['size' => 5]);
+        $madifficultygroup[] = $mform->createElement('static', 'ma_hard_label', '', '% Hard');
+
+        $mform->addGroup($madifficultygroup, 'ma_difficulty_group',
+            'Multiple Answer Difficulty', ' ', false);
+        $mform->hideIf('ma_difficulty_group', 'include_multiple_answer');
+
+        $mform->setType('ma_easy_pct', PARAM_INT);
+        $mform->setType('ma_medium_pct', PARAM_INT);
+        $mform->setType('ma_hard_pct', PARAM_INT);
+
+        $mform->setDefault('ma_easy_pct', 25);
+        $mform->setDefault('ma_medium_pct', 50);
+        $mform->setDefault('ma_hard_pct', 25);
+
         // Action buttons
         $this->add_action_buttons(true, get_string('generate', 'local_ai_quiz'));
     }
@@ -351,6 +392,40 @@ HTML;
         }
         if ($hardpct < 0 || $hardpct > 100) {
             $errors['difficulty_group'] = get_string('error:invalidpercentage', 'local_ai_quiz');
+        }
+
+        // Validate multiple answer questions if enabled
+        if (!empty($data['include_multiple_answer'])) {
+            $macount = $data['multiple_answer_count'] ?? 0;
+            $totalquestions = $data['numquestions'] ?? 0;
+
+            // Validate MA count doesn't exceed total questions
+            if ($macount <= 0) {
+                $errors['multiple_answer_count'] = 'Multiple answer count must be at least 1';
+            } else if ($macount > $totalquestions) {
+                $errors['multiple_answer_count'] = "Cannot exceed total questions ({$totalquestions})";
+            }
+
+            // Validate MA difficulty percentages
+            $maeasypct = $data['ma_easy_pct'] ?? 0;
+            $mamediumpct = $data['ma_medium_pct'] ?? 0;
+            $mahardpct = $data['ma_hard_pct'] ?? 0;
+            $matotalpct = $maeasypct + $mamediumpct + $mahardpct;
+
+            if ($matotalpct != 100) {
+                $errors['ma_difficulty_group'] = "Multiple answer difficulty must total 100% (currently {$matotalpct}%)";
+            }
+
+            // Validate each MA percentage is between 0 and 100
+            if ($maeasypct < 0 || $maeasypct > 100) {
+                $errors['ma_difficulty_group'] = 'Each percentage must be between 0 and 100';
+            }
+            if ($mamediumpct < 0 || $mamediumpct > 100) {
+                $errors['ma_difficulty_group'] = 'Each percentage must be between 0 and 100';
+            }
+            if ($mahardpct < 0 || $mahardpct > 100) {
+                $errors['ma_difficulty_group'] = 'Each percentage must be between 0 and 100';
+            }
         }
 
         return $errors;

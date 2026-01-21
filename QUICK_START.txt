@@ -1,0 +1,52 @@
+===============================================================================
+AI QUIZ GENERATOR FOR MOODLE - QUICK START
+===============================================================================
+
+INSTALLATION (2 minutes):
+
+1. Log in to Moodle as Administrator
+
+2. Go to: Site Administration → Plugins → Install plugins
+
+3. Upload ai_quiz.zip
+
+4. Click "Install plugin from the ZIP file"
+
+5. Follow the installation wizard
+
+6. Configure API key:
+   - Site Administration → Plugins → Local plugins → AI Quiz Generator
+   - Get free API key: https://makersuite.google.com/app/apikey
+   - Paste key and save
+
+USAGE:
+
+1. Go to any course
+2. Course administration → AI Quiz Generator
+3. Upload PDF/DOCX/PPTX (or paste website URL)
+4. Set number of questions (default: 20)
+5. Click "Generate Quiz"
+6. Review and edit questions
+7. Import to question bank
+
+FEATURES:
+
+✓ AI-powered question generation (Gemini 2.5 Flash)
+✓ PDF page range extraction
+✓ Primary vs Supporting documents
+✓ Preview & edit before import
+✓ Configurable difficulty levels
+
+REQUIREMENTS:
+
+- Moodle 4.0+
+- PHP 8.0+ (8.1+ recommended)
+- Google Gemini API key (FREE tier available)
+
+SUPPORT:
+
+- Full documentation: README.md
+- Installation guide: INSTALL_GUIDE.md
+- Troubleshooting: See INSTALL_GUIDE.md
+
+===============================================================================

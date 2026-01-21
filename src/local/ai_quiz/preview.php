@@ -257,7 +257,7 @@ foreach ($quizdata['questions'] as $i => $q) {
     if ($ismultiple) {
         echo html_writer::start_div('alert alert-warning mb-3');
         echo html_writer::tag('strong', '[Multiple Answer] ');
-        echo "Select all that apply. Each correct answer worth {$fractionpercorrect}% (partial credit available).";
+        echo "Select all that apply. Each correct answer: +{$fractionpercorrect}%, each wrong answer: -{$fractionpercorrect}% (negative marking prevents guessing).";
         echo html_writer::end_div();
     }
 
@@ -298,8 +298,12 @@ foreach ($quizdata['questions'] as $i => $q) {
 
         // Option text (editable)
         $optiontext = $q['options'][$opt];
-        if ($ismultiple && $isCorrect) {
-            $optiontext .= " <span class='badge badge-success ml-2'>{$fractionpercorrect}%</span>";
+        if ($ismultiple) {
+            if ($isCorrect) {
+                $optiontext .= " <span class='badge badge-success ml-2'>+{$fractionpercorrect}%</span>";
+            } else {
+                $optiontext .= " <span class='badge badge-danger ml-2'>-{$fractionpercorrect}%</span>";
+            }
         }
 
         echo html_writer::tag('div',
