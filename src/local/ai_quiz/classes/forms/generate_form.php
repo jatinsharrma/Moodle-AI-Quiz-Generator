@@ -39,6 +39,32 @@ class generate_form extends \moodleform {
             $this->_customdata['categories']);
         $mform->addRule('categoryid', get_string('required'), 'required', null, 'client');
 
+        // Add "Create new category" button
+        $createcategoryhtml = <<<'HTML'
+<button type="button" id="btn-create-category" class="btn btn-secondary btn-sm">
+    <i class="fa fa-plus"></i> Create New Category
+</button>
+<div id="create-category-form" style="display:none; margin-top:10px; padding:15px; border:1px solid #ddd; border-radius:5px; background:#f9f9f9;">
+    <h5>Create New Category</h5>
+    <div class="form-group">
+        <label for="new_category_name">Category Name *</label>
+        <input type="text" id="new_category_name" class="form-control" placeholder="e.g. Biology Quiz 1" />
+    </div>
+    <div class="form-group">
+        <label for="new_category_info">Description (optional)</label>
+        <textarea id="new_category_info" class="form-control" rows="2" placeholder="Optional description"></textarea>
+    </div>
+    <button type="button" id="btn-save-category" class="btn btn-primary btn-sm">
+        <i class="fa fa-save"></i> Save Category
+    </button>
+    <button type="button" id="btn-cancel-category" class="btn btn-secondary btn-sm">
+        Cancel
+    </button>
+    <div id="category-message" style="margin-top:10px;"></div>
+</div>
+HTML;
+        $mform->addElement('static', 'create_category_btn', '', $createcategoryhtml);
+
         // Primary Documents (Required)
         $mform->addElement('header', 'primaryfiles', get_string('primarydocuments', 'local_ai_quiz'));
 
@@ -102,18 +128,28 @@ class generate_form extends \moodleform {
         $mform->addRule('numquestions', get_string('required'), 'required', null, 'client');
         $mform->addRule('numquestions', get_string('numeric', 'local_ai_quiz'), 'numeric', null, 'client');
 
-        // Difficulty distribution
-        $mform->addElement('text', 'easy', get_string('easy', 'local_ai_quiz'), ['size' => 5]);
-        $mform->setType('easy', PARAM_INT);
-        $mform->setDefault('easy', 5);
+        // Difficulty distribution (percentages)
+        $mform->addElement('static', 'difficulty_label', '',
+            get_string('difficulty_distribution_help', 'local_ai_quiz'));
 
-        $mform->addElement('text', 'medium', get_string('medium', 'local_ai_quiz'), ['size' => 5]);
-        $mform->setType('medium', PARAM_INT);
-        $mform->setDefault('medium', 10);
+        $difficultygroup = [];
+        $difficultygroup[] = $mform->createElement('text', 'easy_pct', '', ['size' => 5]);
+        $difficultygroup[] = $mform->createElement('static', 'easy_label', '', '% ' . get_string('easy', 'local_ai_quiz'));
+        $difficultygroup[] = $mform->createElement('text', 'medium_pct', '', ['size' => 5]);
+        $difficultygroup[] = $mform->createElement('static', 'medium_label', '', '% ' . get_string('medium', 'local_ai_quiz'));
+        $difficultygroup[] = $mform->createElement('text', 'hard_pct', '', ['size' => 5]);
+        $difficultygroup[] = $mform->createElement('static', 'hard_label', '', '% ' . get_string('hard', 'local_ai_quiz'));
 
-        $mform->addElement('text', 'hard', get_string('hard', 'local_ai_quiz'), ['size' => 5]);
-        $mform->setType('hard', PARAM_INT);
-        $mform->setDefault('hard', 5);
+        $mform->addGroup($difficultygroup, 'difficulty_group',
+            get_string('difficulty_distribution', 'local_ai_quiz'), ' ', false);
+
+        $mform->setType('easy_pct', PARAM_INT);
+        $mform->setType('medium_pct', PARAM_INT);
+        $mform->setType('hard_pct', PARAM_INT);
+
+        $mform->setDefault('easy_pct', 25);
+        $mform->setDefault('medium_pct', 50);
+        $mform->setDefault('hard_pct', 25);
 
         // Action buttons
         $this->add_action_buttons(true, get_string('generate', 'local_ai_quiz'));
@@ -125,14 +161,157 @@ class generate_form extends \moodleform {
     public function definition_after_data() {
         global $PAGE;
 
-        // Add JavaScript to reload page when course is selected
+        // Add JavaScript to load categories via AJAX when course is selected
+        $ajaxurl = new \moodle_url('/local/ai_quiz/ajax_get_categories.php');
+        $ajaxcreatecategoryurl = new \moodle_url('/local/ai_quiz/ajax_create_category.php');
         $PAGE->requires->js_init_code("
             require(['jquery'], function($) {
+                function loadCategories(courseid, selectedCategoryId) {
+                    var categorySelect = $('#id_categoryid');
+
+                    if (courseid) {
+                        // Show loading state
+                        categorySelect.prop('disabled', true);
+                        categorySelect.html('<option value=\"\">Loading...</option>');
+
+                        // Load categories via AJAX
+                        $.ajax({
+                            url: '" . $ajaxurl . "',
+                            type: 'GET',
+                            data: { courseid: courseid, sesskey: M.cfg.sesskey },
+                            dataType: 'json',
+                            success: function(response) {
+                                // Clear and populate category dropdown
+                                categorySelect.html('');
+
+                                if (response.categories && response.categories.length > 0) {
+                                    categorySelect.append('<option value=\"\">Choose...</option>');
+                                    $.each(response.categories, function(index, category) {
+                                        var option = $('<option></option>')
+                                            .val(category.id)
+                                            .text(category.name);
+
+                                        // Re-select previously selected category if provided
+                                        if (selectedCategoryId && category.id == selectedCategoryId) {
+                                            option.prop('selected', true);
+                                        }
+
+                                        categorySelect.append(option);
+                                    });
+                                } else {
+                                    categorySelect.append('<option value=\"\">No categories available</option>');
+                                }
+
+                                categorySelect.prop('disabled', false);
+                            },
+                            error: function() {
+                                categorySelect.html('<option value=\"\">Error loading categories</option>');
+                                categorySelect.prop('disabled', false);
+                            }
+                        });
+                    } else {
+                        categorySelect.html('<option value=\"\">Select a course first</option>');
+                        categorySelect.prop('disabled', true);
+                    }
+                }
+
+                // Handle course selection change
                 $('#id_courseid').change(function() {
                     var courseid = $(this).val();
-                    if (courseid) {
-                        window.location.href = '" . new \moodle_url('/local/ai_quiz/generate.php') . "' + '?courseid=' + courseid;
+                    loadCategories(courseid, null);
+                });
+
+                // On page load, if course is selected but no categories loaded, load them
+                $(document).ready(function() {
+                    var courseid = $('#id_courseid').val();
+                    var categorySelect = $('#id_categoryid');
+
+                    // Check if course is selected but categories are empty (only default option)
+                    if (courseid && categorySelect.find('option').length <= 1) {
+                        loadCategories(courseid, null);
                     }
+                });
+
+                // Handle Create New Category button
+                $('#btn-create-category').click(function(e) {
+                    e.preventDefault(); // Prevent form validation
+                    e.stopPropagation(); // Stop event bubbling
+
+                    var courseid = $('#id_courseid').val();
+                    if (!courseid) {
+                        alert('Please select a course first');
+                        return false;
+                    }
+                    $('#create-category-form').slideDown();
+                    $('#new_category_name').focus();
+                    return false; // Prevent any default action
+                });
+
+                // Handle Cancel button
+                $('#btn-cancel-category').click(function(e) {
+                    e.preventDefault();
+                    $('#create-category-form').slideUp();
+                    $('#new_category_name').val('');
+                    $('#new_category_info').val('');
+                    $('#category-message').html('');
+                    return false;
+                });
+
+                // Handle Save Category button
+                $('#btn-save-category').click(function(e) {
+                    e.preventDefault();
+                    var courseid = $('#id_courseid').val();
+                    var categoryName = $('#new_category_name').val().trim();
+                    var categoryInfo = $('#new_category_info').val().trim();
+                    var messageDiv = $('#category-message');
+
+                    // Validate
+                    if (!categoryName) {
+                        messageDiv.html('<div class=\"alert alert-danger\">Category name is required</div>');
+                        return false;
+                    }
+
+                    // Show loading
+                    messageDiv.html('<div class=\"alert alert-info\">Creating category...</div>');
+                    $('#btn-save-category').prop('disabled', true);
+
+                    // Create category via AJAX
+                    $.ajax({
+                        url: '" . $ajaxcreatecategoryurl . "',
+                        type: 'POST',
+                        data: {
+                            courseid: courseid,
+                            name: categoryName,
+                            info: categoryInfo,
+                            sesskey: M.cfg.sesskey
+                        },
+                        dataType: 'json',
+                        success: function(response) {
+                            if (response.success) {
+                                messageDiv.html('<div class=\"alert alert-success\">Category created successfully!</div>');
+
+                                // Refresh category dropdown with new list
+                                loadCategories(courseid, response.categoryid);
+
+                                // Clear form and hide after 1 second
+                                setTimeout(function() {
+                                    $('#create-category-form').slideUp();
+                                    $('#new_category_name').val('');
+                                    $('#new_category_info').val('');
+                                    messageDiv.html('');
+                                    $('#btn-save-category').prop('disabled', false);
+                                }, 1000);
+                            } else {
+                                messageDiv.html('<div class=\"alert alert-danger\">Error: ' + response.error + '</div>');
+                                $('#btn-save-category').prop('disabled', false);
+                            }
+                        },
+                        error: function() {
+                            messageDiv.html('<div class=\"alert alert-danger\">Failed to create category. Please try again.</div>');
+                            $('#btn-save-category').prop('disabled', false);
+                        }
+                    });
+                    return false; // Prevent form submission
                 });
             });
         ");
@@ -153,10 +332,25 @@ class generate_form extends \moodleform {
             $errors['primarydocuments'] = get_string('error:noprimarydocs', 'local_ai_quiz');
         }
 
-        // Validate difficulty distribution matches total questions
-        $total = ($data['easy'] ?? 0) + ($data['medium'] ?? 0) + ($data['hard'] ?? 0);
-        if ($total != $data['numquestions']) {
-            $errors['numquestions'] = get_string('error:difficultymismatch', 'local_ai_quiz');
+        // Validate difficulty percentages add up to 100
+        $easypct = $data['easy_pct'] ?? 0;
+        $mediumpct = $data['medium_pct'] ?? 0;
+        $hardpct = $data['hard_pct'] ?? 0;
+        $totalpct = $easypct + $mediumpct + $hardpct;
+
+        if ($totalpct != 100) {
+            $errors['difficulty_group'] = get_string('error:percentagemismatch', 'local_ai_quiz', $totalpct);
+        }
+
+        // Validate each percentage is between 0 and 100
+        if ($easypct < 0 || $easypct > 100) {
+            $errors['difficulty_group'] = get_string('error:invalidpercentage', 'local_ai_quiz');
+        }
+        if ($mediumpct < 0 || $mediumpct > 100) {
+            $errors['difficulty_group'] = get_string('error:invalidpercentage', 'local_ai_quiz');
+        }
+        if ($hardpct < 0 || $hardpct > 100) {
+            $errors['difficulty_group'] = get_string('error:invalidpercentage', 'local_ai_quiz');
         }
 
         return $errors;

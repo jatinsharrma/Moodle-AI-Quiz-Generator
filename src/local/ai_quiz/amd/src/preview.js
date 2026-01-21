@@ -27,10 +27,12 @@ define(['jquery', 'core/ajax', 'core/notification'], function($, Ajax, Notificat
                 $('.question-checkbox').prop('checked', false);
             });
 
-            // Delete question
-            $('.delete-question').on('click', function() {
-                var qid = $(this).data('qid');
-                var questionCard = $(this).closest('.question-card');
+            // Delete question with AJAX
+            $(document).on('click', '.delete-question', function(e) {
+                e.preventDefault();
+                var $button = $(this);
+                var qid = $button.data('qid');
+                var questionCard = $button.closest('.question-card');
 
                 if (confirm('Are you sure you want to delete this question?')) {
                     var sessionkey = new URLSearchParams(window.location.search).get('sessionkey');
@@ -40,7 +42,39 @@ define(['jquery', 'core/ajax', 'core/notification'], function($, Ajax, Notificat
                         '&qid=' + qid +
                         '&sesskey=' + M.cfg.sesskey;
 
-                    window.location.href = url;
+                    // Disable button during request
+                    $button.prop('disabled', true).text('Deleting...');
+
+                    // Send AJAX request
+                    $.ajax({
+                        url: url,
+                        type: 'GET',
+                        dataType: 'json',
+                        success: function(response) {
+                            // Fade out and remove the question card
+                            questionCard.fadeOut(400, function() {
+                                $(this).remove();
+
+                                // Update question count
+                                var remaining = $('.question-card').length;
+                                $('.lead').text('Total questions: ' + remaining);
+
+                                // Show message if no questions remaining
+                                if (remaining === 0) {
+                                    var generateUrl = M.cfg.wwwroot + '/local/ai_quiz/generate.php';
+                                    $('#preview-form').html(
+                                        '<div class="alert alert-warning">No questions remaining. ' +
+                                        '<a href="' + generateUrl + '">Generate new questions</a></div>'
+                                    );
+                                }
+                            });
+                        },
+                        error: function(xhr, status, error) {
+                            // Re-enable button and show error
+                            $button.prop('disabled', false).text('Delete');
+                            Notification.alert('Error', 'Failed to delete question: ' + error, 'OK');
+                        }
+                    });
                 }
             });
 

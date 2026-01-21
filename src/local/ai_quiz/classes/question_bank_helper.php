@@ -37,7 +37,8 @@ class question_bank_helper {
         $results = [
             'success' => 0,
             'failed' => 0,
-            'errors' => []
+            'errors' => [],
+            'question_ids' => [] // Track successfully imported question IDs
         ];
 
         if (!isset($quizdata['questions']) || empty($quizdata['questions'])) {
@@ -52,6 +53,16 @@ class question_bank_helper {
             return $results;
         }
 
+        debugging("=== IMPORTING TO CATEGORY ===", DEBUG_DEVELOPER);
+        debugging("Category ID: {$categoryid}", DEBUG_DEVELOPER);
+        debugging("Category Name: {$category->name}", DEBUG_DEVELOPER);
+        debugging("Category ContextID: {$category->contextid}", DEBUG_DEVELOPER);
+        debugging("Category Parent: {$category->parent}", DEBUG_DEVELOPER);
+
+        // CRITICAL: Check what columns actually exist in question table
+        $columns = $DB->get_columns('question');
+        debugging("Question table columns: " . implode(', ', array_keys($columns)), DEBUG_DEVELOPER);
+
         // Get question type
         $qtype = \question_bank::get_qtype('multichoice');
 
@@ -59,18 +70,122 @@ class question_bank_helper {
             try {
                 $question = self::create_question_object($qdata, $categoryid, $contextid);
 
-                // Simulate form data - this is what save_question expects
-                $formdata = clone $question;
+                // Prepare for database insert - convert array fields to text
+                $dbquestion = clone $question;
+                $dbquestion->questiontext = is_array($question->questiontext) ? $question->questiontext['text'] : $question->questiontext;
+                $dbquestion->generalfeedback = is_array($question->generalfeedback) ? $question->generalfeedback['text'] : $question->generalfeedback;
 
-                // Save the question using the question type's save method
-                $savedquestion = $qtype->save_question($question, $formdata);
+                // Remove multichoice-specific fields before base insert
+                // CRITICAL: Also save category (not a DB column, but needed for save_question_options)
+                $category = $question->category;
+                $correctfeedback = $question->correctfeedback;
+                $partiallycorrectfeedback = $question->partiallycorrectfeedback;
+                $incorrectfeedback = $question->incorrectfeedback;
+                $answer = $question->answer;
+                $fraction = $question->fraction;
+                $feedback = $question->feedback;
+                $single = $question->single;
+                $shuffleanswers = $question->shuffleanswers;
+                $answernumbering = $question->answernumbering;
+                $showstandardinstruction = $question->showstandardinstruction;
 
-                if ($savedquestion && isset($savedquestion->id)) {
-                    $results['success']++;
-                } else {
-                    $results['failed']++;
-                    $results['errors'][] = "Failed to save: " . self::truncate_text($qdata['question'], 50);
+                unset($dbquestion->category); // Remove category - not a DB column in Moodle 4.0+
+                unset($dbquestion->correctfeedback);
+                unset($dbquestion->partiallycorrectfeedback);
+                unset($dbquestion->incorrectfeedback);
+                unset($dbquestion->answer);
+                unset($dbquestion->fraction);
+                unset($dbquestion->feedback);
+                unset($dbquestion->single);
+                unset($dbquestion->shuffleanswers);
+                unset($dbquestion->answernumbering);
+                unset($dbquestion->showstandardinstruction);
+
+                // Insert the base question record
+                $dbquestion->id = $DB->insert_record('question', $dbquestion);
+
+                if (!$dbquestion->id) {
+                    throw new \Exception("Failed to insert base question record");
                 }
+
+                // Restore multichoice fields for save_question_options - KEEP AS ARRAYS
+                $question->id = $dbquestion->id;
+
+                // CRITICAL: Restore category (needed for save_question_options to link to category)
+                $question->category = $category;
+
+                // CRITICAL: Add context object (not just contextid)
+                $question->context = \context::instance_by_id($contextid);
+
+                // Keep combined feedback AS IS (arrays)
+                $question->correctfeedback = $correctfeedback;
+                $question->partiallycorrectfeedback = $partiallycorrectfeedback;
+                $question->incorrectfeedback = $incorrectfeedback;
+
+                // Keep answer and feedback AS IS (arrays)
+                $question->answer = $answer;
+                $question->fraction = $fraction;
+                $question->feedback = $feedback;
+
+                $question->single = $single;
+                $question->shuffleanswers = $shuffleanswers;
+                $question->answernumbering = $answernumbering;
+                $question->showstandardinstruction = $showstandardinstruction;
+
+                // Debug: Log what we're about to save
+                debugging("=== SAVING QUESTION ID {$question->id} ===", DEBUG_DEVELOPER);
+                debugging("Category: {$question->category}", DEBUG_DEVELOPER);
+                debugging("Name: {$question->name}", DEBUG_DEVELOPER);
+                debugging("Hidden: {$question->hidden}", DEBUG_DEVELOPER);
+                debugging("Answer count: " . count($question->answer), DEBUG_DEVELOPER);
+
+                // Now save the question type-specific options
+                $result = $qtype->save_question_options($question);
+
+                // Check if save was successful
+                if ($result === false || (is_object($result) && isset($result->error))) {
+                    $error = is_object($result) && isset($result->error) ? $result->error : "Unknown error";
+                    throw new \Exception("Failed to save question options: " . $error);
+                }
+
+                // Verify the question was saved by checking if it has answers
+                $savedanswers = $DB->count_records('question_answers', ['question' => $question->id]);
+                debugging("Saved answers count: {$savedanswers}", DEBUG_DEVELOPER);
+
+                if ($savedanswers == 0) {
+                    throw new \Exception("Question saved but no answers found - options save failed");
+                }
+
+                // CRITICAL: Create question_bank_entry to link question to category (Moodle 4.0+)
+                // In Moodle 4.0+, questions are linked to categories via question_bank_entries table
+                $entry = new \stdClass();
+                $entry->questioncategoryid = $categoryid;
+                $entry->idnumber = null;
+                $entry->ownerid = $USER->id;
+
+                $entryid = $DB->insert_record('question_bank_entries', $entry);
+                debugging("Created question_bank_entry ID: {$entryid}", DEBUG_DEVELOPER);
+
+                // Create question_version to link entry to question
+                $version = new \stdClass();
+                $version->questionbankentryid = $entryid;
+                $version->version = 1;
+                $version->questionid = $question->id;
+                $version->status = 'ready'; // Status: ready, draft, or hidden
+
+                $versionid = $DB->insert_record('question_versions', $version);
+                debugging("Created question_version ID: {$versionid}", DEBUG_DEVELOPER);
+
+                // Verify question is in database - DON'T specify fields yet
+                $checkquestion = $DB->get_record('question', ['id' => $question->id]);
+                debugging("Question in DB: " . ($checkquestion ? 'YES' : 'NO'), DEBUG_DEVELOPER);
+                if ($checkquestion) {
+                    debugging("Question fields: " . implode(', ', array_keys((array)$checkquestion)), DEBUG_DEVELOPER);
+                }
+
+                debugging("Question ID {$question->id} saved successfully with bank entry {$entryid}", DEBUG_DEVELOPER);
+                $results['success']++;
+                $results['question_ids'][] = $question->id; // Track IDs for verification
             } catch (\Exception $e) {
                 $results['failed']++;
                 $results['errors'][] = $e->getMessage();
@@ -79,6 +194,22 @@ class question_bank_helper {
                 $results['failed']++;
                 $results['errors'][] = $e->getMessage();
                 debugging("Question import error: " . $e->getMessage() . " | Question: " . json_encode($qdata), DEBUG_DEVELOPER);
+            }
+        }
+
+        // Final verification: Check what's actually in the database
+        if (!empty($results['question_ids'])) {
+            debugging("=== FINAL VERIFICATION ===", DEBUG_DEVELOPER);
+            debugging("Imported question IDs: " . implode(', ', $results['question_ids']), DEBUG_DEVELOPER);
+
+            // Query database directly to see what's there (no field list to avoid column errors)
+            list($insql, $inparams) = $DB->get_in_or_equal($results['question_ids']);
+            $dbquestions = $DB->get_records_select('question', "id $insql", $inparams);
+            debugging("Found " . count($dbquestions) . " questions in database", DEBUG_DEVELOPER);
+
+            if ($dbquestions) {
+                $first = reset($dbquestions);
+                debugging("First question fields: " . implode(', ', array_keys((array)$first)), DEBUG_DEVELOPER);
             }
         }
 
@@ -103,10 +234,22 @@ class question_bank_helper {
         $question->category = $categoryid;
         $question->contextid = $contextid;
         $question->parent = 0;
-        $question->name = self::truncate_text($qdata['question'], 100);
-        $question->questiontext = $qdata['question'];
+
+        // Generate a short, descriptive name (NOT shown to students)
+        $question->name = self::generate_question_name($qdata);
+
+        // The actual question text (shown to students)
+        $question->questiontext = [
+            'text' => $qdata['question'],
+            'format' => FORMAT_HTML,
+            'itemid' => 0
+        ];
         $question->questiontextformat = FORMAT_HTML;
-        $question->generalfeedback = $qdata['explanation'] ?? '';
+        $question->generalfeedback = [
+            'text' => $qdata['explanation'] ?? '',
+            'format' => FORMAT_HTML,
+            'itemid' => 0
+        ];
         $question->generalfeedbackformat = FORMAT_HTML;
         $question->defaultmark = 1.0;
         $question->penalty = 0.3333333;
@@ -121,8 +264,12 @@ class question_bank_helper {
         $question->createdby = $USER->id;
         $question->modifiedby = $USER->id;
 
+        // Determine if single or multiple answer question
+        $answertype = $qdata['answer_type'] ?? 'single';
+        $ismultiple = ($answertype === 'multiple');
+
         // Multichoice specific fields
-        $question->single = 1; // Single answer
+        $question->single = $ismultiple ? 0 : 1; // 0 = multiple answers, 1 = single answer
         $question->shuffleanswers = 1; // Shuffle the choices
         $question->answernumbering = 'abc'; // Use a, b, c, d numbering
         $question->showstandardinstruction = 1; // Show standard instructions
@@ -154,8 +301,15 @@ class question_bank_helper {
         $question->fraction = [];
         $question->feedback = [];
 
+        // Handle both single answer (string) and multiple answers (array)
         $correctanswer = $qdata['correct_answer'];
+        $correctanswers = is_array($correctanswer) ? $correctanswer : [$correctanswer];
         $answeroptions = ['A', 'B', 'C', 'D'];
+
+        // Calculate fraction for each correct answer
+        // For multiple correct answers, distribute 1.0 across all correct answers
+        $numcorrect = count($correctanswers);
+        $fractionpercorrect = 1.0 / $numcorrect;
 
         $answerindex = 0;
         foreach ($answeroptions as $optionkey) {
@@ -167,8 +321,9 @@ class question_bank_helper {
                     'itemid' => 0
                 ];
 
-                // Set fraction (1.0 for correct, 0.0 for incorrect)
-                $question->fraction[$answerindex] = ($optionkey === $correctanswer) ? 1.0 : 0.0;
+                // Set fraction (distribute 1.0 across correct answers, 0.0 for incorrect)
+                $iscorrect = in_array($optionkey, $correctanswers);
+                $question->fraction[$answerindex] = $iscorrect ? $fractionpercorrect : 0.0;
 
                 // Feedback for this answer
                 $question->feedback[$answerindex] = [
@@ -197,6 +352,87 @@ class question_bank_helper {
         }
 
         return $question;
+    }
+
+    /**
+     * Generate a short, descriptive question name for organization
+     * Format: "Q{id} - {type} - {difficulty} - {topic/keywords}"
+     *
+     * @param array $qdata Question data from AI
+     * @return string Short question name (max 60 chars)
+     */
+    private static function generate_question_name($qdata) {
+        $parts = [];
+
+        // Start with Q{id} if available
+        if (isset($qdata['id'])) {
+            $parts[] = 'Q' . $qdata['id'];
+        }
+
+        // Add answer type indicator (MA = Multiple Answer, SA = Single Answer)
+        $answertype = $qdata['answer_type'] ?? 'single';
+        if ($answertype === 'multiple') {
+            $parts[] = '[MA]'; // Multiple Answer
+        }
+
+        // Add difficulty if available
+        if (isset($qdata['difficulty']) && !empty($qdata['difficulty'])) {
+            $parts[] = ucfirst($qdata['difficulty']);
+        }
+
+        // Add topic or extract keywords from question
+        if (isset($qdata['topic']) && !empty($qdata['topic'])) {
+            // Use topic if available
+            $parts[] = self::truncate_text($qdata['topic'], 30);
+        } else if (isset($qdata['question'])) {
+            // Extract first few meaningful words from question
+            $keywords = self::extract_keywords($qdata['question']);
+            if ($keywords) {
+                $parts[] = $keywords;
+            }
+        }
+
+        // Combine parts with separator
+        $name = implode(' - ', $parts);
+
+        // Ensure it's not too long (max 60 chars for question name)
+        return self::truncate_text($name, 60);
+    }
+
+    /**
+     * Extract meaningful keywords from question text
+     *
+     * @param string $text Question text
+     * @return string Keywords (max 25 chars)
+     */
+    private static function extract_keywords($text) {
+        // Remove question marks and extra spaces
+        $text = trim(str_replace('?', '', $text));
+
+        // Remove common stop words
+        $stopwords = ['what', 'which', 'when', 'where', 'why', 'how', 'is', 'are', 'the', 'a', 'an', 'in', 'on', 'at', 'to', 'of'];
+
+        // Split into words
+        $words = preg_split('/\s+/', strtolower($text));
+
+        // Filter out stop words and keep meaningful ones
+        $keywords = [];
+        foreach ($words as $word) {
+            if (strlen($word) >= 4 && !in_array($word, $stopwords)) {
+                $keywords[] = $word;
+                if (count($keywords) >= 3) {
+                    break; // Keep first 3 meaningful words
+                }
+            }
+        }
+
+        if (empty($keywords)) {
+            // Fallback: use first few words
+            $words = array_slice($words, 0, 3);
+            return ucfirst(implode(' ', $words));
+        }
+
+        return ucfirst(implode(' ', $keywords));
     }
 
     /**

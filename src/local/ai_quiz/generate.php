@@ -18,8 +18,11 @@ require_login();
 $contextid = optional_param('contextid', 0, PARAM_INT);
 $courseid = optional_param('courseid', 0, PARAM_INT);
 
-// Try to detect course context from current page context
-if (!$courseid && $PAGE->context && $PAGE->context->contextlevel == CONTEXT_COURSE) {
+// Set page context early to avoid warnings
+$PAGE->set_context(context_system::instance());
+
+// Try to detect course context from current page context if accessing from course
+if (!$courseid && isset($PAGE->context) && $PAGE->context->contextlevel == CONTEXT_COURSE) {
     $courseid = $PAGE->context->instanceid;
 }
 
@@ -162,10 +165,16 @@ if ($mform->is_cancelled()) {
         }
 
         // Generate quiz with primary/supporting distinction
+        // Convert percentages to actual numbers
+        $totalquestions = $data->numquestions;
+        $easycount = round(($data->easy_pct / 100) * $totalquestions);
+        $mediumcount = round(($data->medium_pct / 100) * $totalquestions);
+        $hardcount = $totalquestions - $easycount - $mediumcount; // Ensure exact total
+
         $difficultymix = [
-            'easy' => $data->easy,
-            'medium' => $data->medium,
-            'hard' => $data->hard
+            'easy' => $easycount,
+            'medium' => $mediumcount,
+            'hard' => $hardcount
         ];
 
         $quizdata = $generator->create_quiz(

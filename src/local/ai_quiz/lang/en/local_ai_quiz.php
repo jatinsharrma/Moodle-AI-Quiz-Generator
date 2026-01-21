@@ -62,9 +62,11 @@ $string['websites_help'] = 'Enter website URLs (one per line) to extract content
 
 // Quiz Settings
 $string['numquestions'] = 'Number of Questions';
-$string['easy'] = 'Easy Questions';
-$string['medium'] = 'Medium Questions';
-$string['hard'] = 'Hard Questions';
+$string['difficulty_distribution'] = 'Difficulty Distribution';
+$string['difficulty_distribution_help'] = 'Enter percentages for each difficulty level (must total 100%)';
+$string['easy'] = 'Easy';
+$string['medium'] = 'Medium';
+$string['hard'] = 'Hard';
 $string['generate'] = 'Generate Quiz';
 $string['numeric'] = 'Must be a number';
 
@@ -91,7 +93,8 @@ $string['error:noselection'] = 'Please select at least one question to import';
 $string['error:no_api_key'] = 'No API key configured. Please configure an API key in plugin settings.';
 $string['error:noprimarydocs'] = 'Primary documents are required. Please upload at least one primary document.';
 $string['error:noinput'] = 'Please provide at least one document or website URL';
-$string['error:difficultymismatch'] = 'Difficulty distribution must match total number of questions';
+$string['error:percentagemismatch'] = 'Difficulty percentages must total 100% (currently: {$a}%)';
+$string['error:invalidpercentage'] = 'Each difficulty percentage must be between 0 and 100';
 $string['error:invalidpagerange'] = 'Invalid page range format for {$a}. Use format: filename.pdf: 10-20';
 $string['error:pdf_processing_failed'] = 'Failed to process PDF file';
 $string['error:docx_processing_failed'] = 'Failed to process DOCX file';
@@ -112,6 +115,7 @@ $string['error:pdftotext_failed'] = 'PDF text extraction failed: {$a}';
 $string['error:pdf_empty'] = 'PDF extraction resulted in empty content';
 $string['error:pdf_extraction_failed'] = 'PDF extraction failed: {$a}';
 $string['error:invalid_question_format'] = 'Invalid question format: {$a}';
+$string['error:category_creation_failed'] = 'Failed to create question category';
 
 // Privacy
 $string['privacy:metadata'] = 'The AI Quiz Generator plugin does not store any personal data. Files uploaded for quiz generation are processed temporarily and deleted immediately after.';

@@ -247,9 +247,13 @@ REQUIREMENTS:
    - Factual recall: 20%
    - Analysis/evaluation: 10%
 
-3. QUALITY STANDARDS:
+3. ANSWER TYPE VARIETY:
+   - 70% Single Answer: Only ONE correct option
+   - 30% Multiple Answer: TWO or more correct options (marked with "answer_type": "multiple")
+   - For multiple answer questions, clearly indicate which options are correct
+
+4. QUALITY STANDARDS:
    - Each question has EXACTLY 4 options (A, B, C, D)
-   - Only ONE correct answer
    - Distractors are plausible but clearly wrong if you know the material
    - Questions are standalone and clear
    - Cover the ENTIRE PRIMARY content proportionally, not just one section
@@ -270,10 +274,27 @@ OUTPUT JSON SCHEMA:
         "D": "Option D"
       },
       "correct_answer": "B",
+      "answer_type": "single",
       "difficulty": "medium",
       "topic": "Topic being tested",
       "question_type": "application",
       "explanation": "Why B is correct"
+    },
+    {
+      "id": 2,
+      "question": "Select all that apply...",
+      "options": {
+        "A": "Correct option 1",
+        "B": "Incorrect option",
+        "C": "Correct option 2",
+        "D": "Incorrect option"
+      },
+      "correct_answer": ["A", "C"],
+      "answer_type": "multiple",
+      "difficulty": "hard",
+      "topic": "Topic being tested",
+      "question_type": "analysis",
+      "explanation": "Why A and C are correct"
     }
   ],
   "metadata": {
@@ -407,10 +428,23 @@ PROMPT;
                 }
             }
 
-            // Check correct answer
+            // Check correct answer (handle both single and multiple answer types)
             if (isset($q['correct_answer']) && isset($q['options'])) {
-                if (!isset($q['options'][$q['correct_answer']])) {
-                    $issues[] = "Q{$qnum}: Correct answer not in options";
+                $correctanswer = $q['correct_answer'];
+
+                // Handle both single answer (string) and multiple answer (array)
+                if (is_array($correctanswer)) {
+                    // Multiple answer - check each answer is valid
+                    foreach ($correctanswer as $answer) {
+                        if (!isset($q['options'][$answer])) {
+                            $issues[] = "Q{$qnum}: Correct answer '{$answer}' not in options";
+                        }
+                    }
+                } else {
+                    // Single answer - check it exists
+                    if (!isset($q['options'][$correctanswer])) {
+                        $issues[] = "Q{$qnum}: Correct answer not in options";
+                    }
                 }
             }
         }

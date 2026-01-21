@@ -230,3 +230,19 @@ GPL v3 or later
 ## Credits
 
 Built for Moodle 4.0+ using Google Gemini 2.5 Flash API.
+
+## Download & Installation
+
+### Quick Install
+
+**Download:** Get `ai_quiz.zip` from the `release/` folder
+
+**Install:** 
+1. Log in to Moodle as admin
+2. Go to: Site Administration → Plugins → Install plugins
+3. Upload `ai_quiz.zip`
+4. Follow the wizard
+5. Configure API key in plugin settings
+
+**Full Instructions:** See `INSTALL_GUIDE.md` or `release/INSTALL_GUIDE.md`
+

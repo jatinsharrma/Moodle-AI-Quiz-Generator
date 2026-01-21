@@ -21,6 +21,7 @@ $PAGE->set_url('/local/ai_quiz/preview.php', ['sessionkey' => $sessionkey]);
 $PAGE->set_context(context_system::instance());
 $PAGE->set_title(get_string('previewquestions', 'local_ai_quiz'));
 $PAGE->set_heading(get_string('previewquestions', 'local_ai_quiz'));
+// Load AMD module for preview functionality (delete, select all, inline editing)
 $PAGE->requires->js_call_amd('local_ai_quiz/preview', 'init');
 
 // Get stored question data
@@ -123,7 +124,14 @@ if ($action === 'delete' && confirm_sesskey()) {
     $record->questiondata = json_encode($quizdata);
     $DB->update_record('local_ai_quiz_temp', $record);
 
-    redirect($PAGE->url, get_string('questiondeleted', 'local_ai_quiz'), null, 'success');
+    // Return JSON for AJAX requests
+    header('Content-Type: application/json');
+    echo json_encode([
+        'success' => true,
+        'message' => get_string('questiondeleted', 'local_ai_quiz'),
+        'remaining' => count($quizdata['questions'])
+    ]);
+    exit;
 }
 
 // Display preview
@@ -200,6 +208,14 @@ foreach ($quizdata['questions'] as $i => $q) {
     echo html_writer::start_div('flex-grow-1');
     echo html_writer::tag('strong', get_string('questionnum', 'local_ai_quiz', $qnum));
     echo ' ';
+
+    // Show answer type badge
+    $qanswertype = $q['answer_type'] ?? 'single';
+    if ($qanswertype === 'multiple') {
+        echo html_writer::tag('span', '[MA]', ['class' => 'badge badge-primary', 'title' => 'Multiple Answer']);
+        echo ' ';
+    }
+
     echo html_writer::tag('span',
         $q['difficulty'],
         ['class' => 'badge badge-' . ($q['difficulty'] === 'easy' ? 'success' : ($q['difficulty'] === 'medium' ? 'warning' : 'danger'))]
@@ -227,28 +243,67 @@ foreach ($quizdata['questions'] as $i => $q) {
     );
     echo html_writer::end_div();
 
+    // Determine if single or multiple answer
+    $answertype = $q['answer_type'] ?? 'single';
+    $ismultiple = ($answertype === 'multiple');
+    $correctanswer = $q['correct_answer'];
+    $correctanswers = is_array($correctanswer) ? $correctanswer : [$correctanswer];
+
+    // Calculate fraction for display
+    $numcorrect = count($correctanswers);
+    $fractionpercorrect = round((1.0 / $numcorrect) * 100, 1); // As percentage
+
+    // Show answer type info
+    if ($ismultiple) {
+        echo html_writer::start_div('alert alert-warning mb-3');
+        echo html_writer::tag('strong', '[Multiple Answer] ');
+        echo "Select all that apply. Each correct answer worth {$fractionpercorrect}% (partial credit available).";
+        echo html_writer::end_div();
+    }
+
     // Options
     echo html_writer::start_tag('ol', ['type' => 'A', 'class' => 'options-list']);
     foreach (['A', 'B', 'C', 'D'] as $opt) {
-        $isCorrect = ($opt === $q['correct_answer']);
+        // Check if this option is correct (handle both single and multiple)
+        $isCorrect = in_array($opt, $correctanswers);
         $class = $isCorrect ? 'list-group-item-success' : '';
 
         echo html_writer::start_tag('li', ['class' => 'mb-2']);
         echo html_writer::start_div('d-flex align-items-center');
 
-        // Radio for correct answer
-        echo html_writer::empty_tag('input', [
-            'type' => 'radio',
-            'name' => 'correct_' . $q['id'],
-            'value' => $opt,
-            'checked' => $isCorrect ? 'checked' : null,
-            'class' => 'mr-2 correct-answer-radio',
-            'data-qid' => $q['id']
-        ]);
+        // Use checkbox for multiple answer, radio for single answer
+        if ($ismultiple) {
+            // Checkbox for multiple answer
+            echo html_writer::empty_tag('input', [
+                'type' => 'checkbox',
+                'name' => 'correct_' . $q['id'] . '[]',
+                'value' => $opt,
+                'checked' => $isCorrect ? 'checked' : null,
+                'class' => 'mr-2 correct-answer-checkbox',
+                'data-qid' => $q['id'],
+                'disabled' => 'disabled' // Preview only
+            ]);
+        } else {
+            // Radio for single answer
+            echo html_writer::empty_tag('input', [
+                'type' => 'radio',
+                'name' => 'correct_' . $q['id'],
+                'value' => $opt,
+                'checked' => $isCorrect ? 'checked' : null,
+                'class' => 'mr-2 correct-answer-radio',
+                'data-qid' => $q['id'],
+                'disabled' => 'disabled' // Preview only
+            ]);
+        }
 
         // Option text (editable)
+        $optiontext = $q['options'][$opt];
+        if ($ismultiple && $isCorrect) {
+            $optiontext .= " <span class='badge badge-success ml-2'>{$fractionpercorrect}%</span>";
+        }
+
         echo html_writer::tag('div',
-            $q['options'][$opt],
+            $optiontext,
             [
                 'class' => 'flex-grow-1 editable p-2 border rounded ' . $class,
                 'contenteditable' => 'true',
@@ -268,18 +323,6 @@ foreach ($quizdata['questions'] as $i => $q) {
         echo html_writer::tag('span', $q['explanation'], ['class' => 'explanation-text']);
         echo html_writer::end_div();
     }
-
-    // Actions
-    echo html_writer::start_div('mt-3');
-    echo html_writer::tag('button',
-        get_string('deletequestion', 'local_ai_quiz'),
-        [
-            'type' => 'button',
-            'class' => 'btn btn-sm btn-danger delete-question',
-            'data-qid' => $q['id']
-        ]
-    );
-    echo html_writer::end_div();
 
     echo html_writer::end_div();
     echo html_writer::end_div();

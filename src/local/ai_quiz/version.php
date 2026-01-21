@@ -9,7 +9,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_ai_quiz';
-$plugin->version = 2024011405;  // YYYYMMDDXX - Fixed question bank import format
+$plugin->version = 2026012012;  // YYYYMMDDXX - Fix Create Category button validation issue
 $plugin->requires = 2022041900; // Moodle 4.0+
 $plugin->maturity = MATURITY_STABLE;
-$plugin->release = 'v1.0.4';
+$plugin->release = 'v1.5.3';
