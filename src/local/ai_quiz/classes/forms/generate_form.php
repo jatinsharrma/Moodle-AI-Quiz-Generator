@@ -366,10 +366,19 @@ HTML;
      * @return array Errors
      */
     public function validation($data, $files) {
+        global $USER;
         $errors = parent::validation($data, $files);
 
-        // Primary documents are required
-        if (empty($data['primarydocuments'])) {
+        // Primary documents are required - check if files actually exist
+        $draftitemid = $data['primarydocuments'] ?? 0;
+        if ($draftitemid) {
+            $fs = get_file_storage();
+            $usercontext = \context_user::instance($USER->id);
+            $draftfiles = $fs->get_area_files($usercontext->id, 'user', 'draft', $draftitemid, 'filename', false);
+            if (empty($draftfiles)) {
+                $errors['primarydocuments'] = get_string('error:noprimarydocs', 'local_ai_quiz');
+            }
+        } else {
             $errors['primarydocuments'] = get_string('error:noprimarydocs', 'local_ai_quiz');
         }
 

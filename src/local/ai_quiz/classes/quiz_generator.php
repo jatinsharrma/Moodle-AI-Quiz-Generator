@@ -52,20 +52,13 @@ class quiz_generator {
      * @return string Extracted text content
      */
     public function process_pdf($filepath) {
-        // For now, use simple PDF text extraction
-        // TODO: Integrate docling or pdftotext
         debugging('Processing PDF: ' . $filepath, DEBUG_DEVELOPER);
+        debugging('PDF file exists: ' . (file_exists($filepath) ? 'YES' : 'NO'), DEBUG_DEVELOPER);
+        debugging('PDF file size: ' . (file_exists($filepath) ? filesize($filepath) . ' bytes' : 'N/A'), DEBUG_DEVELOPER);
+        debugging('exec() available: ' . (function_exists('exec') ? 'YES' : 'NO'), DEBUG_DEVELOPER);
 
-        // Simple extraction using pdftotext if available
-        $output = [];
-        $returnvar = 0;
-        exec("pdftotext " . escapeshellarg($filepath) . " -", $output, $returnvar);
-
-        if ($returnvar === 0) {
-            return implode("\n", $output);
-        }
-
-        throw new \moodle_exception('error:pdf_processing_failed', 'local_ai_quiz');
+        // Use pdf_extractor which has proper fallbacks and diagnostics
+        return pdf_extractor::extract_pages($filepath);
     }
 
     /**
@@ -187,8 +180,18 @@ class quiz_generator {
                        substr($context, -$takefromend);
         }
 
+        // Debug context before building prompt
+        debugging("Context length before prompt: " . strlen($context) . " chars", DEBUG_DEVELOPER);
+        debugging("Context preview (first 200 chars): " . substr($context, 0, 200), DEBUG_DEVELOPER);
+
+        if (empty(trim($context))) {
+            throw new \moodle_exception('error:empty_prompt', 'local_ai_quiz', '',
+                'PDF text extraction returned empty content. PDF may be image-based/scanned.');
+        }
+
         $prompt = $this->build_mcq_prompt($context, $numquestions, $difficultymix, $primaryonly, $multipleanswerconfig);
 
+        debugging('Prompt built, length: ' . strlen($prompt) . ' chars', DEBUG_DEVELOPER);
         debugging('Generating ' . $numquestions . ' MCQs...', DEBUG_DEVELOPER);
 
         $response = $this->call_gemini_api($prompt);
@@ -291,7 +294,20 @@ REQUIREMENTS:
    - Cover the ENTIRE PRIMARY content proportionally, not just one section
    - Use varied question stems
    - Only use information explicitly stated in primary materials
-   - Avoid questions like "According to the document..."
+
+5. STRICT QUESTION STYLE RULES:
+   - NEVER reference the document, text, passage, or material in questions
+   - NEVER ask "According to the document/text/passage..."
+   - NEVER ask "What does the author say/mention/state..."
+   - NEVER ask "What is mentioned on page X..."
+   - NEVER ask "What is the title/heading/section of..."
+   - NEVER ask "As described in the material..."
+   - Questions must test KNOWLEDGE of the subject, not awareness of the document
+   - Write as if the student already studied the topic, not read a specific document
+   - BAD:  "According to the RFC, what does the TTL field specify?"
+   - GOOD: "What is the purpose of the TTL field in an IP packet header?"
+   - BAD:  "What does the document say about fragmentation?"
+   - GOOD: "Which condition triggers IP packet fragmentation?"
 
 OUTPUT JSON SCHEMA:
 {
@@ -344,6 +360,20 @@ PROMPT;
      * @return array Decoded JSON response
      */
     private function call_gemini_api($prompt) {
+        // Guard against empty prompt
+        if (empty(trim($prompt))) {
+            throw new \moodle_exception('error:empty_prompt', 'local_ai_quiz', '',
+                'Prompt is empty - PDF text extraction likely returned no content. ' .
+                'The PDF may be scanned/image-based (no selectable text). ' .
+                'Please use a PDF with selectable text, or copy-paste text content directly.');
+        }
+
+        debugging("Prompt length: " . strlen($prompt) . " chars", DEBUG_DEVELOPER);
+
+        // Sanitize prompt to valid UTF-8 - invalid chars cause json_encode to return false
+        $prompt = mb_convert_encoding($prompt, 'UTF-8', 'UTF-8');
+        $prompt = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $prompt);
+
         $url = $this->apiendpoint . '?key=' . $this->apikey;
 
         $data = [
@@ -360,10 +390,26 @@ PROMPT;
             ]
         ];
 
+        $jsonpayload = json_encode($data);
+
+        // Check json_encode succeeded
+        if ($jsonpayload === false) {
+            debugging("json_encode failed: " . json_last_error_msg(), DEBUG_DEVELOPER);
+            // Try again with JSON_INVALID_UTF8_SUBSTITUTE flag
+            $jsonpayload = json_encode($data, JSON_INVALID_UTF8_SUBSTITUTE);
+        }
+
+        if ($jsonpayload === false) {
+            throw new \moodle_exception('error:bad_api_request', 'local_ai_quiz', '',
+                'Failed to encode request: ' . json_last_error_msg());
+        }
+
+        debugging("JSON payload size: " . strlen($jsonpayload) . " bytes", DEBUG_DEVELOPER);
+
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonpayload);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
             'Content-Type: application/json'
         ]);
@@ -538,7 +584,11 @@ PROMPT;
 
                     $primaryparts[] = "=== PRIMARY DOCUMENT: {$filename}{$rangestr} ===\n{$content}\n";
                 } catch (\Exception $e) {
-                    debugging("Error processing primary doc {$docpath}: " . $e->getMessage(), DEBUG_DEVELOPER);
+                    $errormsg = "Error processing primary doc {$docpath}: " . $e->getMessage();
+                    debugging($errormsg, DEBUG_DEVELOPER);
+
+                    // Also notify user via Moodle notification (will show on page)
+                    \core\notification::error("Failed to process {$filename}: " . $e->getMessage());
                 }
             }
         }

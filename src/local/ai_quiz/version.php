@@ -9,7 +9,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_ai_quiz';
-$plugin->version = 2026012015;  // YYYYMMDDXX - Fix: unchecked = single answer only
+$plugin->version = 2026012022;  // YYYYMMDDXX - Improve prompt: no document-referencing questions
 $plugin->requires = 2022041900; // Moodle 4.0+
 $plugin->maturity = MATURITY_STABLE;
-$plugin->release = 'v1.7.1';
+$plugin->release = 'v1.7.7';

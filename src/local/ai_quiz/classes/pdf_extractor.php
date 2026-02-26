@@ -110,19 +110,41 @@ class pdf_extractor {
 
         // Add page range arguments if specified
         if ($frompage !== null && $topage !== null) {
-            $command .= ' -f ' . escapeshellarg($frompage);
-            $command .= ' -t ' . escapeshellarg($topage);
+            // Cast to int for safety (already validated as positive integers)
+            // Don't use escapeshellarg on numbers - some pdftotext versions don't accept quoted numbers
+            $command .= ' -f ' . (int)$frompage;
+            $command .= ' -t ' . (int)$topage;
         }
 
         $command .= ' ' . escapeshellarg($filepath) . ' -';
+
+        // Debug: log the actual command
+        debugging("Executing pdftotext command: {$command}", DEBUG_DEVELOPER);
 
         $output = [];
         $returnvar = 0;
         exec($command, $output, $returnvar);
 
         if ($returnvar !== 0) {
+            $errormsg = "Exit code: {$returnvar}";
+
+            // Provide helpful error messages based on exit code
+            if ($returnvar == 99) {
+                if ($frompage !== null && $topage !== null) {
+                    $errormsg .= " - Invalid page range ({$frompage}-{$topage}) or PDF has issues with page extraction. Try without page range first.";
+                } else {
+                    $errormsg .= " - PDF file is corrupted, encrypted, or not a valid PDF. Please check the file.";
+                }
+            } else if ($returnvar == 1) {
+                $errormsg .= " - Error opening PDF file.";
+            } else if ($returnvar == 2) {
+                $errormsg .= " - Error opening output file.";
+            } else if ($returnvar == 3) {
+                $errormsg .= " - Error related to PDF permissions.";
+            }
+
             throw new \moodle_exception('error:pdftotext_failed', 'local_ai_quiz',
-                '', "Exit code: {$returnvar}");
+                '', $errormsg);
         }
 
         $text = implode("\n", $output);
@@ -144,14 +166,32 @@ class pdf_extractor {
         static $available = null;
 
         if ($available === null) {
+            // First check if exec() is enabled
+            if (!function_exists('exec') || in_array('exec', array_map('trim', explode(',', ini_get('disable_functions'))))) {
+                debugging('exec() function is disabled in PHP. Cannot use pdftotext.', DEBUG_DEVELOPER);
+                $available = false;
+                return $available;
+            }
+
             $output = [];
             $returnvar = 0;
             exec('which pdftotext 2>/dev/null', $output, $returnvar);
-            $available = ($returnvar === 0);
+            $available = ($returnvar === 0 && !empty($output));
 
-            if (!$available) {
-                debugging('pdftotext command not found. Install poppler-utils for better PDF support.',
-                    DEBUG_DEVELOPER);
+            if ($available) {
+                debugging('pdftotext found at: ' . $output[0], DEBUG_DEVELOPER);
+            } else {
+                // Try alternative locations
+                foreach (['/usr/bin/pdftotext', '/usr/local/bin/pdftotext'] as $path) {
+                    if (file_exists($path)) {
+                        $available = true;
+                        debugging('pdftotext found at: ' . $path, DEBUG_DEVELOPER);
+                        break;
+                    }
+                }
+                if (!$available) {
+                    debugging('pdftotext NOT found. Run: sudo apt-get install poppler-utils', DEBUG_DEVELOPER);
+                }
             }
         }
 
