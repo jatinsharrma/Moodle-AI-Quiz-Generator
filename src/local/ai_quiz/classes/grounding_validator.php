@@ -70,6 +70,40 @@ class grounding_validator {
     const MIN_QUOTE_WORDS = 4;
 
     /**
+     * Share of content words two questions must have in common to count as duplicates.
+     *
+     * Deliberately conservative. Measured separation between reworded duplicates
+     * and genuinely different questions on the same topic is narrow (duplicates
+     * from ~0.75, distinct questions up to ~0.67), and token overlap cannot
+     * reliably tell "How wide is X?" from "What is X equivalent to?". The costs
+     * are asymmetric: rejecting a good question discards verified work, whereas a
+     * missed near-duplicate is visible to the teacher in the preview. So this
+     * sits well above the distinct-question ceiling and accepts that the weakest
+     * duplicates slip through. The prompt instruction is the primary defence;
+     * this is the backstop.
+     */
+    const DUPLICATE_THRESHOLD = 0.8;
+
+    /** Questions with fewer content words than this are not judged for duplication. */
+    const MIN_DUPLICATE_WORDS = 3;
+
+    /**
+     * Words carrying no topical meaning, ignored when comparing questions.
+     *
+     * Question stems are formulaic ("which of the following describes..."), so
+     * without this two questions about entirely different topics can look alike.
+     */
+    const STOPWORDS = [
+        'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'any', 'can', 'had', 'her',
+        'was', 'one', 'our', 'out', 'has', 'him', 'his', 'how', 'its', 'may', 'new', 'now',
+        'old', 'see', 'two', 'who', 'did', 'get', 'let', 'put', 'say', 'she', 'too', 'use',
+        'what', 'which', 'when', 'where', 'that', 'this', 'with', 'from', 'they', 'them',
+        'have', 'been', 'were', 'does', 'their', 'there', 'these', 'those', 'would', 'about',
+        'following', 'best', 'most', 'true', 'false', 'statement', 'statements', 'describes',
+        'correct', 'incorrect', 'select', 'apply', 'according', 'given', 'below', 'above',
+    ];
+
+    /**
      * Normalise text for comparison.
      *
      * Joins words broken across lines by hyphenation, folds all typographic
@@ -303,5 +337,101 @@ class grounding_validator {
      */
     public static function is_suspect($status) {
         return in_array($status, [self::STATUS_UNGROUNDED, self::STATUS_NOQUOTE], true);
+    }
+
+    /**
+     * Proportion of the shorter question's content words shared with the longer.
+     *
+     * Overlap coefficient rather than Jaccard: "What is the purpose of the TTL
+     * field?" and "What does the TTL field do?" are the same question, but
+     * Jaccard scores them low because the differing filler words inflate the
+     * union. Only content words are compared, so wording changes that carry no
+     * meaning do not disguise a repeat.
+     *
+     * @param string $a First question text
+     * @param string $b Second question text
+     * @return float Between 0.0 and 1.0
+     */
+    public static function question_overlap($a, $b) {
+        $atokens = self::content_words($a);
+        $btokens = self::content_words($b);
+
+        $shorter = min(count($atokens), count($btokens));
+        if ($shorter === 0) {
+            return 0.0;
+        }
+
+        $shared = count(array_intersect($atokens, $btokens));
+
+        return $shared / $shorter;
+    }
+
+    /**
+     * Whether a question repeats something already in a set of questions.
+     *
+     * @param array $question The candidate question
+     * @param array $existing Questions already accepted
+     * @return bool True if the candidate duplicates one of them
+     */
+    public static function is_duplicate_question($question, array $existing) {
+        $text = $question['question'] ?? '';
+        if (trim($text) === '') {
+            return false;
+        }
+
+        // Too few distinctive words to judge; treat as not a duplicate.
+        if (count(self::content_words($text)) < self::MIN_DUPLICATE_WORDS) {
+            return false;
+        }
+
+        foreach ($existing as $other) {
+            if (self::question_overlap($text, $other['question'] ?? '') >= self::DUPLICATE_THRESHOLD) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Distinct, meaning-bearing words of a string.
+     *
+     * @param string $text Input text
+     * @return array Unique content words
+     */
+    private static function content_words($text) {
+        $normalised = self::normalize($text);
+        preg_match_all('/[\p{L}\p{N}]+/u', $normalised, $matches);
+
+        $words = [];
+        foreach ($matches[0] as $word) {
+            if (\core_text::strlen($word) < 3 || in_array($word, self::STOPWORDS, true)) {
+                continue;
+            }
+            $words[self::stem($word)] = true;
+        }
+
+        return array_keys($words);
+    }
+
+    /**
+     * Crudest possible stemming: fold a trailing plural "s".
+     *
+     * Enough to stop "packet" and "packets" being treated as unrelated words,
+     * which otherwise hides genuine duplicates. Deliberately minimal - anything
+     * more aggressive starts merging words that mean different things.
+     *
+     * @param string $word A lowercase word
+     * @return string The stemmed word
+     */
+    private static function stem($word) {
+        $length = strlen($word);
+
+        // Leave "address", "class" and friends alone.
+        if ($length > 3 && substr($word, -1) === 's' && substr($word, -2, 1) !== 's') {
+            return substr($word, 0, $length - 1);
+        }
+
+        return $word;
     }
 }

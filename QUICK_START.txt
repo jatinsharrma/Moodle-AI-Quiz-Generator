@@ -10,6 +10,10 @@ INSTALLATION (2 minutes):
 
 3. Upload ai_quiz.zip
 
+   (No prebuilt zip ships with the repo - build one with:
+      cd src/local && zip -r ../../release/ai_quiz.zip ai_quiz -x '*.git*'
+    or copy src/local/ai_quiz into moodle/local/ directly.)
+
 4. Click "Install plugin from the ZIP file"
 
 5. Follow the installation wizard
@@ -19,6 +23,18 @@ INSTALLATION (2 minutes):
    - Get free API key: https://makersuite.google.com/app/apikey
    - Paste key and save
 
+7. Install PDF tools on the server (strongly recommended):
+
+   sudo apt-get install poppler-utils      (Debian/Ubuntu)
+   sudo dnf install poppler-utils          (RHEL/Rocky/Alma)
+
+   Then confirm the plugin can use it, as the web server user:
+
+   sudo -u www-data php local/ai_quiz/cli/diagnose.php --file=/path/to/a.pdf
+
+   Without this, questions cannot be automatically verified against your
+   document and will all show "Not checked".
+
 USAGE:
 
 1. Go to any course
@@ -26,22 +42,29 @@ USAGE:
 3. Upload PDF/DOCX/PPTX (or paste website URL)
 4. Set number of questions (default: 20)
 5. Click "Generate Quiz"
-6. Review and edit questions
+6. Review questions - check the source badges:
+     "Verified in source"  = traced to your document, safe to import
+     "Not found in source" = may be from general knowledge, REVIEW IT
+                             (unselected by default)
 7. Import to question bank
 
 FEATURES:
 
 ✓ AI-powered question generation (Gemini 2.5 Flash)
+✓ Source grounding - questions verified against your document
+✓ Native PDF reading when text extraction is unavailable
 ✓ PDF page range extraction
 ✓ Primary vs Supporting documents
 ✓ Preview & edit before import
 ✓ Configurable difficulty levels
+✓ Automatic retry when the AI returns a malformed response
 
 REQUIREMENTS:
 
 - Moodle 4.0+
-- PHP 8.0+ (8.1+ recommended)
+- PHP 8.1+
 - Google Gemini API key (FREE tier available)
+- poppler-utils (strongly recommended - enables question verification)
 
 SUPPORT:
 

@@ -269,6 +269,68 @@ TEXT;
     }
 
     /**
+     * Reworded repeats of an existing question must be recognised, so that a
+     * replacement question does not simply restate one already in the set.
+     */
+    public function test_reworded_repeats_are_detected(): void {
+        $existing = [
+            ['question' => 'What is the purpose of the TTL field in an IP packet header?'],
+            ['question' => 'Which of the following best describes the Amber Handshake?'],
+        ];
+
+        $this->assertTrue(grounding_validator::is_duplicate_question(
+            ['question' => 'What does the TTL field in an IP header do?'], $existing));
+
+        $this->assertTrue(grounding_validator::is_duplicate_question(
+            ['question' => 'Which statement most accurately describes the Amber Handshake?'],
+            $existing));
+    }
+
+    /**
+     * Different questions must not be mistaken for repeats - discarding a
+     * well-grounded question is worse than letting a near-repeat through.
+     */
+    public function test_distinct_questions_are_not_treated_as_repeats(): void {
+        $existing = [
+            ['question' => 'What is the purpose of the TTL field in an IP packet header?'],
+            ['question' => 'How wide is the Decay Counter field?'],
+        ];
+
+        foreach ([
+            'Which condition triggers ZTP packet fragmentation?',
+            'What identifier is used to reassemble fragments?',
+            'In which year was ZTP ratified?',
+            // Same subject, genuinely different question.
+            'What is the Decay Counter equivalent to in IP?',
+        ] as $candidate) {
+            $this->assertFalse(
+                grounding_validator::is_duplicate_question(['question' => $candidate], $existing),
+                "Wrongly treated as a duplicate: {$candidate}"
+            );
+        }
+    }
+
+    /**
+     * Singular and plural forms of the same word must not hide a repeat.
+     */
+    public function test_plural_forms_do_not_hide_repeats(): void {
+        $this->assertGreaterThanOrEqual(
+            grounding_validator::DUPLICATE_THRESHOLD,
+            grounding_validator::question_overlap(
+                'Which condition triggers ZTP packet fragmentation?',
+                'What condition causes fragmentation of ZTP packets?')
+        );
+    }
+
+    /**
+     * Very short questions carry too little signal to judge.
+     */
+    public function test_short_questions_are_not_judged(): void {
+        $this->assertFalse(grounding_validator::is_duplicate_question(
+            ['question' => 'Why?'], [['question' => 'Why?']]));
+    }
+
+    /**
      * Suspect statuses are the ones the teacher must act on.
      */
     public function test_is_suspect(): void {

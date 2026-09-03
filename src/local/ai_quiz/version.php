@@ -9,7 +9,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_ai_quiz';
-$plugin->version = 2026090300;  // YYYYMMDDXX - Source grounding + bounded repair loop
+$plugin->version = 2026090301;  // YYYYMMDDXX - Replace off-source questions instead of only flagging them
 $plugin->requires = 2022041900; // Moodle 4.0+
 $plugin->maturity = MATURITY_STABLE;
-$plugin->release = 'v1.9.0';
+$plugin->release = 'v1.10.0';

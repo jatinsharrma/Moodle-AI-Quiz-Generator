@@ -10,37 +10,8 @@ namespace local_ai_quiz;
 
 defined('MOODLE_INTERNAL') || die();
 
-/**
- * Test double returning scripted results instead of calling Gemini.
- *
- * @package    local_ai_quiz
- * @copyright  2026
- * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
- */
-class scripted_quiz_generator extends quiz_generator {
-
-    /** @var array Queue of results; a Throwable is thrown, anything else returned. */
-    public $script = [];
-
-    /** @var array What each attempt actually asked the API for. */
-    public $calls = [];
-
-    protected function call_gemini_api($prompt, $inlinefiles = [], $priorturns = []) {
-        preg_match('/Generate (\d+) multiple-choice questions/', $prompt, $matches);
-
-        $this->calls[] = [
-            'requested' => isset($matches[1]) ? (int)$matches[1] : null,
-            'priorturns' => count($priorturns),
-            'repairtext' => $priorturns ? ($priorturns[1]['parts'][0]['text'] ?? '') : '',
-        ];
-
-        $next = array_shift($this->script);
-        if ($next instanceof \Throwable) {
-            throw $next;
-        }
-        return $next;
-    }
-}
+global $CFG;
+require_once($CFG->dirroot . '/local/ai_quiz/tests/fixtures/scripted_quiz_generator.php');
 
 /**
  * Tests for the bounded generation repair loop.
@@ -79,9 +50,16 @@ final class repair_loop_test extends \advanced_testcase {
      * @return array Sources
      */
     private function sources(): array {
+        // The quote used by good_payload() must genuinely appear here, otherwise
+        // grounding fails and the replacement pass fires, changing the call counts
+        // these tests assert on.
+        $text = 'Some genuine document text. a verbatim quote taken from the source '
+            . 'appears right here, followed by further material so that the extract '
+            . 'is long enough to be treated as usable content.';
+
         return [
-            'context' => 'PRIMARY SOURCE MATERIALS: some genuine document text',
-            'primarytext' => 'some genuine document text',
+            'context' => 'PRIMARY SOURCE MATERIALS: ' . $text,
+            'primarytext' => $text,
             'files' => [],
         ];
     }
@@ -114,7 +92,7 @@ final class repair_loop_test extends \advanced_testcase {
 
         $this->assertCount(2, $gen->calls);
         $this->assertEquals(2, $gen->calls[1]['priorturns']);
-        $this->assertStringContainsString('not valid JSON', $gen->calls[1]['repairtext']);
+        $this->assertStringContainsString('not valid JSON', $gen->calls[1]['feedback']);
         $this->assertArrayHasKey('questions', $result);
     }
 
@@ -130,8 +108,8 @@ final class repair_loop_test extends \advanced_testcase {
 
         $gen->generate_mcqs($this->sources(), 20);
 
-        $this->assertStringContainsString('Do NOT invent', $gen->calls[1]['repairtext']);
-        $this->assertStringContainsString('source_quote', $gen->calls[1]['repairtext']);
+        $this->assertStringContainsString('Do NOT invent', $gen->calls[1]['feedback']);
+        $this->assertStringContainsString('source_quote', $gen->calls[1]['feedback']);
     }
 
     /**
@@ -147,7 +125,7 @@ final class repair_loop_test extends \advanced_testcase {
         $gen->generate_mcqs($this->sources(), 20);
 
         $this->assertCount(2, $gen->calls);
-        $this->assertStringContainsString('exactly 4 options', $gen->calls[1]['repairtext']);
+        $this->assertStringContainsString('exactly 4 options', $gen->calls[1]['feedback']);
     }
 
     /**

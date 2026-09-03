@@ -2,9 +2,19 @@
 
 ## Quick Install (via Moodle Web Interface)
 
+> **Note:** the repository does not ship a prebuilt `ai_quiz.zip`. Build one
+> first, or skip to *Manual Installation* below and copy the directory directly.
+>
+> ```bash
+> cd src/local
+> zip -r ../../release/ai_quiz.zip ai_quiz -x '*.git*'
+> ```
+>
+> The zip must contain an `ai_quiz/` folder at its root, which this produces.
+
 ### Step 1: Upload Plugin
 
-1. **Download the plugin zip file**: `ai_quiz.zip`
+1. **Build or obtain the plugin zip file**: `ai_quiz.zip`
 
 2. **Log in to Moodle as Administrator**
 
@@ -66,7 +76,7 @@
 - SSH/terminal access to server
 - Root or sudo privileges
 - Moodle 4.0+ installed
-- PHP 8.1+ (recommended)
+- PHP 8.1+
 
 ### Step 1: Upload Plugin Files
 
@@ -108,9 +118,12 @@ Same as "Quick Install - Step 2" above.
 
 ## Post-Installation
 
-### Optional: Install PDF Tools (Recommended)
+### Install PDF Tools (Strongly Recommended)
 
-For better PDF extraction with page ranges:
+The plugin works without these, but **it cannot verify that generated questions
+actually came from your document**. With `pdftotext` available, text is extracted
+locally and every question is checked against it. Without it, PDFs are sent to
+Gemini to read directly and questions are marked "Not checked".
 
 **Ubuntu/Debian:**
 ```bash
@@ -118,16 +131,55 @@ sudo apt-get update
 sudo apt-get install poppler-utils
 ```
 
-**CentOS/RHEL:**
+**RHEL / Rocky / Alma / Fedora:**
 ```bash
-sudo yum install poppler-utils
+sudo dnf install poppler-utils
 ```
 
-**Test PDF extraction:**
+**Alpine (Docker):**
 ```bash
-which pdftotext
-# Should output: /usr/bin/pdftotext
+apk add poppler-utils
 ```
+
+If Moodle runs in a container, install it **inside the container** — add it to
+your Dockerfile or it disappears on the next rebuild.
+
+#### Installing the package is not always enough
+
+PHP must also be permitted to run it. Two things commonly block this:
+
+```bash
+# 1. Is the binary visible to the WEB SERVER user, not just to root?
+sudo -u www-data which pdftotext        # Debian/Ubuntu
+sudo -u apache which pdftotext          # RHEL/Rocky/Alma
+
+# 2. Is exec() disabled in PHP?
+php -i | grep disable_functions
+```
+
+If `disable_functions` includes `exec`, remove it from `php.ini` (locate the file
+with `php --ini`) and restart PHP:
+
+```bash
+sudo systemctl restart php8.1-fpm    # or php-fpm, apache2, httpd
+```
+
+Note the PHP CLI and the web server often use **different** `php.ini` files. The
+one that matters is shown in Moodle under
+**Site administration → Server → PHP info**.
+
+#### Confirm with the plugin's own diagnostic
+
+Run this **as the web server user**:
+
+```bash
+sudo -u www-data php /var/www/html/moodle/local/ai_quiz/cli/diagnose.php \
+    --file=/path/to/a-real-lecture.pdf
+```
+
+It reports whether `exec()` is available, whether `pdftotext` is usable, whether
+the API key is configured, the temperature setting, and whether a given PDF
+actually yields readable text. You want `pdftotext usable: yes`.
 
 ### Optional: Enable Debugging (for troubleshooting)
 
@@ -151,7 +203,9 @@ After installation, verify:
 - [ ] Settings page accessible
 - [ ] API key configured
 - [ ] Link appears in course administration menu
+- [ ] `cli/diagnose.php` reports `pdftotext usable: yes`
 - [ ] Can upload documents and generate questions
+- [ ] Generated questions show green **"Verified in source"** badges
 - [ ] Questions import to question bank successfully
 
 ---
@@ -176,19 +230,48 @@ After installation, verify:
 # Check version.php
 cat /var/www/html/moodle/local/ai_quiz/version.php | grep version
 
-# Should show version like: 2024011405
-# NOT a future date like: 2026011405
+# Should show: 2026090301
 ```
+
+The version must be *higher* than the one already installed, or Moodle will
+refuse to upgrade. If you are reinstalling over an older copy, confirm the
+number increased.
 
 ### "API quota exceeded"
 
-**Cause:** Using Gemini 2.5 Pro on free tier (not available)
+**Cause:** Gemini free tier rate limit reached.
 
 **Solution:**
-- Plugin uses Gemini 2.5 Flash (available on free tier)
-- Verify in settings or code
-- Check: `/var/www/html/moodle/local/ai_quiz/classes/quiz_generator.php`
-- Should say: `gemini-2.5-flash`
+- Wait a minute and try again
+- Reduce the number of questions, or use a page range to shrink the document
+- Leave Supporting Documents empty - they consume quota too
+- Current limits: https://ai.google.dev/gemini-api/docs/rate-limits
+
+### "Questions are not from my document"
+
+**Cause:** The server cannot extract text from the PDF, so it cannot be verified.
+
+**Solution:**
+1. Run `cli/diagnose.php` as the web server user
+2. If it reports `pdftotext usable: NO`, fix that first (see Post-Installation)
+3. Check the preview badges - "Not found in source" means the question could not
+   be traced back to your material and should be reviewed before importing
+
+### "The AI ran out of output space..."
+
+**Cause:** The response was cut off before the question set was complete.
+
+**Solution:** Generate fewer questions per run (10 rather than 20). The plugin
+retries automatically with a smaller request, but very large asks can still
+exhaust the budget.
+
+### "Quiz generation was stopped because a primary document could not be read"
+
+**Cause:** One of your primary documents failed to process.
+
+This is deliberate: generating from only part of your material would produce a
+quiz that is not based on your document. The message names the file and the
+reason - fix that file, or remove it and generate again.
 
 ### "No categories available"
 
@@ -237,14 +320,14 @@ sudo rm -rf /var/www/html/moodle/local/ai_quiz
 
 - **Documentation**: See `docs/` folder in repository
 - **Issues**: Report on GitHub
-- **Testing**: Use `test_gemini_api.php` script
+- **Diagnostics**: Run `local/ai_quiz/cli/diagnose.php` as the web server user
+- **Tests**: `vendor/bin/phpunit --filter local_ai_quiz`
 
 ---
 
 ## Version Information
 
-- **Current Version**: 1.0.4
-- **Release Date**: 2026-01-14
+- **Current Version**: 1.10.0 (`2026090301`)
 - **Moodle Version**: 4.0+
-- **PHP Version**: 8.0+ (8.1+ recommended)
+- **PHP Version**: 8.1+
 - **License**: GPL v3 or later

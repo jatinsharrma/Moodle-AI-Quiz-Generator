@@ -118,6 +118,24 @@ Before importing, you can review every generated question:
 - **Uncheck** any question you don't want to import
 - Use **Select All** / **Deselect All** for bulk operations
 - Each multiple answer question shows **+X% / -X%** scoring badges
+- Each question shows the **source quote** it was built from
+
+#### Source badges — read these first
+
+Every question is checked against the text extracted from your document. Anything
+that fails the check is **automatically replaced** with a new question drawn from
+your material before you ever see it, so red badges should be rare — they mean
+replacement was tried and did not succeed:
+
+| Badge | Meaning | Action |
+|-------|---------|--------|
+| **Verified in source** (green) | A supporting quote was found in your document | Safe to import |
+| **Not found in source** (red) | Could not be traced to your document, and replacement was attempted but failed | **Unselected by default.** Check it against your material before importing |
+| **No source quote** (red) | The AI gave no usable quote, and replacement failed | **Unselected by default.** Review it |
+| **Not checked** (grey) | Your PDF was read directly by the AI, so there is no local text to check against | Review as normal |
+
+If everything says **"Not checked"**, your server cannot extract PDF text.
+Ask your administrator to install `poppler-utils` — see `INSTALL_GUIDE.md`.
 
 When happy, click **"Import Selected Questions"**.
 
@@ -137,11 +155,21 @@ From there you can:
 ## Question Quality
 
 The AI generates questions that:
-- ✅ Test **subject knowledge**, not document awareness
-- ✅ Never say "According to the document..." or "What does the text say..."
+- ✅ Come **entirely from your document** — every question must cite a verbatim
+  quote from your material, which is checked automatically
+- ✅ Are **worded directly**, without saying "According to the document..." or
+  "What does the text say...". This is about phrasing only: the facts still come
+  from your document
 - ✅ Have exactly **4 options (A, B, C, D)**
 - ✅ Cover the document **proportionally** (not just the first section)
 - ✅ Include an **explanation** for the correct answer
+
+### You may get fewer questions than you asked for
+
+The AI is told to return **fewer questions rather than invent them** when your
+document doesn't contain enough material. Asking for 20 and getting 14
+well-grounded questions is correct behaviour — a warning will explain why. If
+this happens often, use a longer document or a wider page range.
 
 ---
 
@@ -150,9 +178,12 @@ The AI generates questions that:
 | Error | Cause | Fix |
 |-------|-------|-----|
 | "Primary documents are required" | No file uploaded or file not saved | Re-upload the file |
-| "PDF extraction returned empty" | PDF is image/scanned based | Use a PDF with selectable text |
+| "The AI ran out of output space..." | Response cut off before finishing | Generate fewer questions per run (10 rather than 20) |
+| "Quiz generation was stopped because a primary document could not be read" | A primary file failed to process | Deliberate — generating from part of your material would not be a quiz from your document. Fix or remove the named file |
+| "The AI provider rejected the request..." | Content filter triggered | Not retryable — try a different section |
 | "Quota exceeded" | Hit API rate limit | Wait 60 seconds, try again |
-| "Bad API request" | Invalid characters in PDF | Try a different PDF |
+| Questions all say "Not checked" | Server cannot extract PDF text | Ask your admin to install `poppler-utils` |
+| Questions say "Not found in source" | Question could not be traced to your document | Review before importing — it may be from general knowledge |
 | Questions not appearing in bank | Moodle cache stale | Purge caches: Site Admin → Development → Purge all caches |
 
 ---
@@ -168,4 +199,4 @@ The AI generates questions that:
 ---
 
 ## Version
-Current version: **v1.7.7** — Gemini 2.5 Flash
+Current version: **v1.10.0** — Gemini 2.5 Flash

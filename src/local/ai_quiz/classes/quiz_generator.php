@@ -41,6 +41,14 @@ class quiz_generator {
     /** Total generation attempts, including the first. */
     const MAX_ATTEMPTS = 3;
 
+    /**
+     * Rounds of asking the AI to replace questions it could not ground.
+     *
+     * Separate from MAX_ATTEMPTS: a malformed response and an out-of-scope
+     * question are independent problems and should not share a budget.
+     */
+    const MAX_GROUNDING_PASSES = 2;
+
     /** Never retry - the same request will fail the same way. */
     const RETRY_NEVER = 'never';
 
@@ -332,7 +340,9 @@ class quiz_generator {
                     $this->warnings[] = get_string('warning:repaired', 'local_ai_quiz', $attempt);
                 }
 
-                return $response;
+                // Swap out anything that cannot be traced back to the source,
+                // rather than handing the teacher a flagged question to sort out.
+                return $this->replace_ungrounded($response, $primarytext, $prompt, $inlinefiles);
 
             } catch (\moodle_exception $e) {
                 $lastexception = $e;
@@ -511,6 +521,210 @@ class quiz_generator {
         return [
             ['role' => 'model', 'parts' => [['text' => $raw]]],
             ['role' => 'user', 'parts' => [['text' => $complaint]]],
+        ];
+    }
+
+    /**
+     * Replace questions that cannot be traced back to the source material.
+     *
+     * Telling a teacher "this question is not from your document" leaves them
+     * with work to do. Where we can, swap the question out instead: hand the AI
+     * the whole question set, name the ones that failed verification, and ask for
+     * replacements drawn from the source. The kept questions go along too, so the
+     * replacements do not simply repeat what is already there.
+     *
+     * Anything still unverified after the passes is left in place and flagged,
+     * so nothing vanishes without the teacher being told.
+     *
+     * @param array $response The generated question payload
+     * @param string $primarytext Extracted primary source text
+     * @param string $prompt The original generation prompt
+     * @param array $inlinefiles Any natively-attached source files
+     * @return array The payload with replacements applied
+     */
+    private function replace_ungrounded($response, $primarytext, $prompt, $inlinefiles) {
+        // Nothing to verify against - the AI read the source files itself.
+        if (trim((string)$primarytext) === '') {
+            return $response;
+        }
+
+        $kept = [];
+        $rejected = [];
+        foreach ($response['questions'] as $question) {
+            $status = grounding_validator::verify($question['source_quote'] ?? '', $primarytext);
+            if (grounding_validator::is_suspect($status)) {
+                $rejected[] = $question;
+            } else {
+                $kept[] = $question;
+            }
+        }
+
+        if (empty($rejected)) {
+            return $response;
+        }
+
+        debugging(count($rejected) . ' question(s) could not be grounded; requesting replacements',
+            DEBUG_DEVELOPER);
+
+        $needed = count($rejected);
+        $accepted = [];
+
+        for ($pass = 1; $pass <= self::MAX_GROUNDING_PASSES && count($accepted) < $needed; $pass++) {
+            $shortfall = $needed - count($accepted);
+            $existing = array_merge($kept, $accepted);
+
+            try {
+                $candidates = $this->request_replacements($existing, $rejected, $shortfall,
+                    $prompt, $inlinefiles);
+            } catch (\moodle_exception $e) {
+                // A failed replacement is not fatal: keep the originals, flagged.
+                debugging("Replacement pass {$pass} failed: " . $e->getMessage(), DEBUG_DEVELOPER);
+                break;
+            }
+
+            foreach ($candidates as $candidate) {
+                if (count($accepted) >= $needed) {
+                    break;
+                }
+                // A replacement must be well-formed, genuinely grounded, and new.
+                if (!empty(self::question_problems($candidate))) {
+                    continue;
+                }
+                $status = grounding_validator::verify($candidate['source_quote'] ?? '', $primarytext);
+                if (grounding_validator::is_suspect($status)) {
+                    continue;
+                }
+                if (grounding_validator::is_duplicate_question($candidate,
+                        array_merge($kept, $accepted))) {
+                    debugging('Discarded a replacement that duplicated an existing question',
+                        DEBUG_DEVELOPER);
+                    continue;
+                }
+                $accepted[] = $candidate;
+            }
+        }
+
+        // Keep any we could not replace, so they are still visible and flagged.
+        $unreplaced = array_slice($rejected, count($accepted));
+        $questions = array_values(array_merge($kept, $accepted, $unreplaced));
+
+        // Renumber so ids stay unique for the preview and import steps.
+        foreach ($questions as $index => $ignored) {
+            $questions[$index]['id'] = $index + 1;
+        }
+        $response['questions'] = $questions;
+
+        if (!empty($accepted)) {
+            $this->warnings[] = get_string('warning:replaced_ungrounded', 'local_ai_quiz',
+                (object)['replaced' => count($accepted), 'total' => $needed]);
+        }
+        if (!empty($unreplaced)) {
+            $this->warnings[] = get_string('warning:unreplaced_ungrounded', 'local_ai_quiz',
+                count($unreplaced));
+        }
+
+        return $response;
+    }
+
+    /**
+     * Ask the AI for replacement questions.
+     *
+     * @param array $existing Questions being kept
+     * @param array $rejected Questions that failed verification
+     * @param int $count How many replacements are needed
+     * @param string $prompt The original generation prompt
+     * @param array $inlinefiles Any natively-attached source files
+     * @return array Candidate replacement questions (may be empty)
+     */
+    private function request_replacements($existing, $rejected, $count, $prompt, $inlinefiles) {
+        $priorturns = self::build_replacement_turns($existing, $rejected, $count);
+
+        $this->usagestats['total_requests']++;
+        $result = $this->call_gemini_api($prompt, $inlinefiles, $priorturns);
+
+        if (empty($result['questions']) || !is_array($result['questions'])) {
+            return [];
+        }
+
+        return $result['questions'];
+    }
+
+    /**
+     * Build the conversation turns asking for replacements.
+     *
+     * The whole question set is echoed back so the model can see what already
+     * exists; without that it reliably produces near-copies of the questions it
+     * has just been told to keep.
+     *
+     * @param array $existing Questions being kept
+     * @param array $rejected Questions that failed verification
+     * @param int $count How many replacements are needed
+     * @return array Two Gemini content turns
+     */
+    private static function build_replacement_turns($existing, $rejected, $count) {
+        $previous = json_encode(['questions' => array_merge($existing, $rejected)],
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        $rejectedlist = '';
+        foreach ($rejected as $i => $question) {
+            $quote = trim((string)($question['source_quote'] ?? ''));
+            $rejectedlist .= ($i + 1) . '. "' . ($question['question'] ?? '') . "\"\n"
+                . '   The quote you gave is not in the source: "'
+                . ($quote !== '' ? $quote : '(none supplied)') . "\"\n";
+        }
+
+        $keptlist = '';
+        foreach ($existing as $i => $question) {
+            $keptlist .= ($i + 1) . '. "' . ($question['question'] ?? '') . '"'
+                . (!empty($question['topic']) ? '  [topic: ' . $question['topic'] . ']' : '')
+                . "\n";
+        }
+        if ($keptlist === '') {
+            $keptlist = "(none - every question failed verification)\n";
+        }
+
+        // Preserve the difficulty profile of what is being removed.
+        $mix = ['easy' => 0, 'medium' => 0, 'hard' => 0];
+        foreach (array_slice($rejected, 0, $count) as $question) {
+            $level = strtolower((string)($question['difficulty'] ?? 'medium'));
+            if (isset($mix[$level])) {
+                $mix[$level]++;
+            } else {
+                $mix['medium']++;
+            }
+        }
+
+        $rejectedcount = count($rejected);
+
+        $instruction = <<<REPLACE
+{$rejectedcount} of your questions could not be verified against the primary source
+material. For each one, the source_quote you supplied does not appear anywhere in
+that material. That means the question was written from your own knowledge of the
+subject rather than from the material you were given.
+
+QUESTIONS TO REMOVE - do not reuse these, and do not simply reword them:
+{$rejectedlist}
+QUESTIONS BEING KEPT - your new questions must NOT duplicate, paraphrase or
+overlap with any of these, and must not test the same fact as any of them:
+{$keptlist}
+Write {$count} NEW replacement question(s), following these rules exactly:
+- Work from the primary source material. Find a passage in it FIRST, copy its
+  exact wording into source_quote, then write a question that passage answers.
+- Draw on parts of the source material that the kept questions do not cover.
+- Difficulty needed: {$mix['easy']} easy, {$mix['medium']} medium, {$mix['hard']} hard.
+- Every question needs exactly 4 options, keyed "A", "B", "C" and "D".
+- source_quote must be at least 8 words, copied word for word from the source.
+  It is checked automatically, so an approximate quote will be rejected again.
+- Reply with a single JSON object in the same schema as before, containing ONLY
+  the new replacement questions. No commentary, no markdown code fences.
+- If the source material does not contain enough distinct content for {$count}
+  more questions, return fewer. Two genuine questions are worth more than five
+  invented ones. Do not invent anything.
+REPLACE;
+
+        return [
+            ['role' => 'model', 'parts' => [['text' => $previous]]],
+            ['role' => 'user', 'parts' => [['text' => $instruction]]],
         ];
     }
 
