@@ -106,9 +106,21 @@ $string['error:api_request_failed'] = 'API request failed: {$a}';
 $string['error:quota_exceeded'] = 'Gemini API quota exceeded: {$a}';
 $string['error:api_auth_failed'] = 'API authentication failed: {$a}';
 $string['error:api_bad_request'] = 'Bad API request: {$a}';
+$string['error:bad_api_request'] = 'The request to the AI could not be built: {$a}';
 $string['error:api_not_found'] = 'API endpoint not found: {$a}';
 $string['error:json_decode_failed'] = 'Failed to decode API response';
-$string['error:invalid_api_response'] = 'Invalid API response format';
+$string['error:invalid_api_response'] = 'The AI returned a response that could not be understood. Technical detail: {$a}';
+$string['error:prompt_blocked'] = 'The AI provider rejected the request before generating anything (reason: {$a}). This usually means the source document triggered a content filter.';
+$string['error:no_candidates'] = 'The AI returned no result at all. Technical detail: {$a}';
+$string['error:response_truncated'] = 'The AI ran out of output space before it finished writing the questions, so the response was cut off. Try generating fewer questions at a time (for example 10 instead of 20), then run it again for the rest. Technical detail: {$a}';
+$string['error:response_blocked'] = 'The AI stopped generating because of a content filter (reason: {$a}). Try a different section of the document.';
+$string['error:invalid_question_structure'] = 'The AI returned questions in the wrong structure: {$a}';
+
+// Repair loop.
+$string['warning:repaired'] = 'The AI\'s first reply was not usable, so it was asked to correct it. The questions below came from attempt {$a}. Review them as usual.';
+$string['warning:reduced_questions'] = 'The response did not fit within the AI\'s output limit, so the request was retried asking for {$a} questions instead. Run the generator again to produce more.';
+$string['warning:attempts_exhausted'] = 'Generation was attempted {$a} times and did not succeed.';
+$string['warning:dropped_malformed'] = '{$a->dropped} question(s) came back malformed after all retries and were discarded; the {$a->kept} valid question(s) were kept.';
 $string['error:no_input'] = 'No input provided for quiz generation';
 $string['error:no_primary_docs'] = 'No valid primary documents could be processed. Please check that your PDF files are not corrupted, encrypted, or password-protected. If you have a .txt file, upload it as .txt (not renamed to .pdf).';
 $string['error:pdf_not_found'] = 'PDF file not found: {$a}';

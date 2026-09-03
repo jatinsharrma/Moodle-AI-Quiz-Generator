@@ -38,6 +38,59 @@ class quiz_generator {
      */
     const MAX_INLINE_BYTES = 12582912; // 12 MB.
 
+    /** Total generation attempts, including the first. */
+    const MAX_ATTEMPTS = 3;
+
+    /** Never retry - the same request will fail the same way. */
+    const RETRY_NEVER = 'never';
+
+    /** Hand the bad output back to the model with the specific complaint. */
+    const RETRY_REPAIR = 'repair';
+
+    /** Repeat the same request after a short pause. */
+    const RETRY_PLAIN = 'plain';
+
+    /** Ask for fewer questions - the output did not fit. */
+    const RETRY_SMALLER = 'smaller';
+
+    /**
+     * Decide how (or whether) a given failure is worth retrying.
+     *
+     * Retrying blindly is not free: generation takes 30-60 seconds and the free
+     * Gemini tier allows only 15 requests per minute, so a wrong strategy burns
+     * both the user's time and their quota to arrive at the same failure.
+     *
+     * @param string $errorcode The moodle_exception error code that was raised
+     * @return string One of the RETRY_* constants
+     */
+    private static function retry_strategy($errorcode) {
+        switch ($errorcode) {
+            // Deterministic. Asking again cannot change the outcome.
+            case 'error:prompt_blocked':
+            case 'error:response_blocked':
+            case 'error:api_auth_failed':
+            case 'error:api_not_found':
+            case 'error:quota_exceeded':
+            case 'error:bad_api_request':
+            case 'error:binary_content':
+            case 'error:empty_prompt':
+                return self::RETRY_NEVER;
+
+            // The answer did not fit. Feedback will not help; a smaller ask will.
+            case 'error:response_truncated':
+                return self::RETRY_SMALLER;
+
+            // Understandable response, wrong shape. The model can fix this.
+            case 'error:invalid_api_response':
+            case 'error:invalid_question_structure':
+                return self::RETRY_REPAIR;
+
+            // Transient or server-side. Try the same thing again shortly.
+            default:
+                return self::RETRY_PLAIN;
+        }
+    }
+
     /**
      * Warnings raised during the last create_quiz() call.
      *
@@ -249,17 +302,265 @@ class quiz_generator {
                 'No readable content could be obtained from the primary documents.');
         }
 
-        $prompt = $this->build_mcq_prompt($context, $numquestions, $difficultymix, $primaryonly,
-            $multipleanswerconfig, !empty($inlinefiles));
+        // Generation runs inside a bounded repair loop. Each kind of failure gets
+        // the response that can actually fix it - see retry_strategy().
+        $targetquestions = $numquestions;
+        $targetmix = $difficultymix;
+        $targetma = $multipleanswerconfig;
+        $priorturns = [];
+        $lastexception = null;
+        $attemptsmade = 0;
 
-        debugging('Prompt built, length: ' . strlen($prompt) . ' chars', DEBUG_DEVELOPER);
-        debugging('Generating ' . $numquestions . ' MCQs...', DEBUG_DEVELOPER);
+        for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
+            $attemptsmade = $attempt;
+            $islast = ($attempt === self::MAX_ATTEMPTS);
 
-        $response = $this->call_gemini_api($prompt, $inlinefiles);
+            $prompt = $this->build_mcq_prompt($context, $targetquestions, $targetmix, $primaryonly,
+                $targetma, !empty($inlinefiles));
 
-        $this->usagestats['total_requests']++;
+            debugging("Attempt {$attempt}/" . self::MAX_ATTEMPTS . ": requesting {$targetquestions}"
+                . ' questions, prompt ' . strlen($prompt) . ' chars', DEBUG_DEVELOPER);
 
+            try {
+                $this->usagestats['total_requests']++;
+                $response = $this->call_gemini_api($prompt, $inlinefiles, $priorturns);
+
+                // Structural problems are repairable, so check before accepting.
+                $response = $this->accept_or_repair($response, $islast);
+
+                if ($attempt > 1) {
+                    $this->warnings[] = get_string('warning:repaired', 'local_ai_quiz', $attempt);
+                }
+
+                return $response;
+
+            } catch (\moodle_exception $e) {
+                $lastexception = $e;
+                $strategy = self::retry_strategy($e->errorcode);
+
+                debugging("Attempt {$attempt} failed ({$e->errorcode}); strategy: {$strategy}",
+                    DEBUG_DEVELOPER);
+
+                if ($strategy === self::RETRY_NEVER || $islast) {
+                    break;
+                }
+
+                $priorturns = [];
+
+                if ($strategy === self::RETRY_REPAIR && $e instanceof response_format_exception) {
+                    // Show the model its own output and say what was wrong with it.
+                    $priorturns = self::build_repair_turns($e);
+
+                } else if ($strategy === self::RETRY_SMALLER) {
+                    // Feedback cannot fix an answer that did not fit. Ask for less.
+                    $reduced = max(5, (int)floor($targetquestions * 0.5));
+                    if ($reduced >= $targetquestions) {
+                        break; // Already as small as it goes.
+                    }
+                    $targetquestions = $reduced;
+                    $targetmix = self::scale_difficulty($targetmix, $targetquestions);
+                    $targetma = self::scale_multiple_answer($targetma, $targetquestions);
+                    $this->warnings[] = get_string('warning:reduced_questions', 'local_ai_quiz',
+                        $targetquestions);
+
+                } else {
+                    // Transient. Pause briefly, then repeat the same request.
+                    sleep($attempt);
+                }
+            }
+        }
+
+        if ($attemptsmade > 1) {
+            $this->warnings[] = get_string('warning:attempts_exhausted', 'local_ai_quiz', $attemptsmade);
+        }
+
+        // Rethrow the real failure: its message is more useful than a generic
+        // "gave up after N tries".
+        if ($lastexception === null) {
+            throw new \moodle_exception('error:invalid_api_response', 'local_ai_quiz', '',
+                'Generation failed without reporting a specific error.');
+        }
+
+        throw $lastexception;
+    }
+
+    /**
+     * Accept a question set, or reject it as repairable.
+     *
+     * On the final attempt, salvage: drop the individual questions that are
+     * malformed and keep the rest, rather than losing a whole usable set over
+     * one bad entry.
+     *
+     * @param array $response Decoded question payload
+     * @param bool $islastattempt Whether any retries remain
+     * @return array The accepted payload
+     * @throws response_format_exception If the set is unusable and repair is possible
+     */
+    private function accept_or_repair($response, $islastattempt) {
+        if (empty($response['questions']) || !is_array($response['questions'])) {
+            throw new response_format_exception('error:invalid_question_structure',
+                'The reply contained no "questions" array.',
+                json_encode($response));
+        }
+
+        $problems = [];
+        foreach ($response['questions'] as $i => $question) {
+            $found = self::question_problems($question);
+            if (!empty($found)) {
+                $problems[$i] = 'Question ' . ($i + 1) . ': ' . implode(', ', $found);
+            }
+        }
+
+        if (empty($problems)) {
+            return $response;
+        }
+
+        if (!$islastattempt) {
+            throw new response_format_exception('error:invalid_question_structure',
+                implode('; ', array_slice($problems, 0, 10)),
+                json_encode($response));
+        }
+
+        // Last attempt: keep whatever is usable.
+        $kept = array_values(array_diff_key($response['questions'], $problems));
+
+        if (empty($kept)) {
+            throw new response_format_exception('error:invalid_question_structure',
+                implode('; ', array_slice($problems, 0, 10)),
+                json_encode($response));
+        }
+
+        $this->warnings[] = get_string('warning:dropped_malformed', 'local_ai_quiz',
+            (object)['dropped' => count($problems), 'kept' => count($kept)]);
+
+        $response['questions'] = $kept;
         return $response;
+    }
+
+    /**
+     * Structural problems with a single question, phrased for the model.
+     *
+     * @param mixed $question One decoded question
+     * @return array List of problem descriptions; empty means the question is fine
+     */
+    private static function question_problems($question) {
+        $problems = [];
+
+        if (!is_array($question)) {
+            return ['is not a JSON object'];
+        }
+
+        foreach (['question', 'options', 'correct_answer', 'difficulty'] as $field) {
+            if (!isset($question[$field])) {
+                $problems[] = "missing \"{$field}\"";
+            }
+        }
+
+        if (isset($question['options'])) {
+            if (!is_array($question['options']) || count($question['options']) !== 4) {
+                $problems[] = 'must have exactly 4 options';
+            } else {
+                $keys = array_keys($question['options']);
+                sort($keys);
+                if ($keys !== ['A', 'B', 'C', 'D']) {
+                    $problems[] = 'options must be keyed A, B, C and D';
+                }
+            }
+        }
+
+        if (isset($question['correct_answer'], $question['options'])
+                && is_array($question['options'])) {
+            foreach ((array)$question['correct_answer'] as $answer) {
+                if (!is_scalar($answer) || !isset($question['options'][$answer])) {
+                    $problems[] = 'correct_answer refers to an option that does not exist';
+                    break;
+                }
+            }
+        }
+
+        return $problems;
+    }
+
+    /**
+     * Build the two conversation turns that ask the model to fix its own output.
+     *
+     * @param response_format_exception $e The failure carrying the raw output
+     * @return array Two Gemini content turns: the model's reply, then our complaint
+     */
+    private static function build_repair_turns(response_format_exception $e) {
+        $raw = (string)$e->rawoutput;
+
+        // Keep the echoed-back output bounded; the middle is the least useful part.
+        if (strlen($raw) > 24000) {
+            $raw = substr($raw, 0, 16000) . "\n\n...[middle omitted]...\n\n" . substr($raw, -6000);
+        }
+
+        $complaint = "Your previous reply could not be used.\n\n"
+            . "PROBLEM: {$e->complaint}\n\n"
+            . "Send the corrected question set now, following these rules exactly:\n"
+            . "- Reply with a single valid JSON object and nothing else.\n"
+            . "- No markdown code fences, no commentary before or after the JSON.\n"
+            . "- Use exactly the schema given in my first message.\n"
+            . "- Every question needs exactly 4 options, keyed \"A\", \"B\", \"C\" and \"D\".\n"
+            . "- Every question needs a verbatim source_quote taken from the primary source material.\n"
+            . "- Keep every question that was already correct. Fix only what was wrong.\n"
+            . "- Do NOT invent replacement content. Everything must still come from the primary\n"
+            . "  source material. If you cannot fix a question from the source, omit it and\n"
+            . "  return fewer questions.";
+
+        return [
+            ['role' => 'model', 'parts' => [['text' => $raw]]],
+            ['role' => 'user', 'parts' => [['text' => $complaint]]],
+        ];
+    }
+
+    /**
+     * Rescale a difficulty split to a new total, preserving proportions.
+     *
+     * @param array|null $mix ['easy' => int, 'medium' => int, 'hard' => int]
+     * @param int $total New question total
+     * @return array|null Rescaled mix
+     */
+    private static function scale_difficulty($mix, $total) {
+        if (empty($mix)) {
+            return $mix;
+        }
+
+        $old = array_sum($mix);
+        if ($old <= 0) {
+            return $mix;
+        }
+
+        $easy = (int)round(($mix['easy'] ?? 0) / $old * $total);
+        $medium = (int)round(($mix['medium'] ?? 0) / $old * $total);
+        $hard = $total - $easy - $medium;
+
+        if ($hard < 0) {
+            $medium = max(0, $medium + $hard);
+            $hard = 0;
+        }
+
+        return ['easy' => $easy, 'medium' => $medium, 'hard' => $hard];
+    }
+
+    /**
+     * Cap the multiple-answer request to a reduced question total.
+     *
+     * @param array|null $config Multiple answer configuration
+     * @param int $total New question total
+     * @return array|null Adjusted configuration
+     */
+    private static function scale_multiple_answer($config, $total) {
+        if (empty($config) || empty($config['count'])) {
+            return $config;
+        }
+
+        $config['count'] = min((int)$config['count'], $total);
+        if (!empty($config['difficulty'])) {
+            $config['difficulty'] = self::scale_difficulty($config['difficulty'], $config['count']);
+        }
+
+        return $config;
     }
 
     /**
@@ -464,7 +765,7 @@ PROMPT;
      * @param string $prompt The prompt to send
      * @return array Decoded JSON response
      */
-    private function call_gemini_api($prompt, $inlinefiles = []) {
+    protected function call_gemini_api($prompt, $inlinefiles = [], $priorturns = []) {
         // Guard against empty prompt
         if (empty(trim($prompt))) {
             throw new \moodle_exception('error:empty_prompt', 'local_ai_quiz', '',
@@ -512,13 +813,25 @@ PROMPT;
         }
         $temperature = max(0.0, min(1.0, (float)$temperature));
 
+        // On a repair attempt the model's rejected output and our complaint are
+        // appended as further turns, so it can see the source material, what it
+        // produced, and what was wrong with it, all in one conversation.
+        $contents = [['role' => 'user', 'parts' => $parts]];
+        foreach ($priorturns as $turn) {
+            $contents[] = $turn;
+        }
+
         $data = [
-            'contents' => [
-                ['parts' => $parts]
-            ],
+            'contents' => $contents,
             'generationConfig' => [
                 'temperature' => $temperature,
-                'responseMimeType' => 'application/json'
+                'responseMimeType' => 'application/json',
+                // Gemini 2.5 Flash spends output budget on internal reasoning
+                // before it writes anything. Without an explicit ceiling a long
+                // question set can exhaust the default budget, and the response
+                // then comes back with no parts at all and finishReason
+                // MAX_TOKENS. Ask for enough room for both.
+                'maxOutputTokens' => 32768,
             ]
         ];
 
@@ -581,17 +894,110 @@ PROMPT;
             throw new \moodle_exception('error:json_decode_failed', 'local_ai_quiz');
         }
 
-        // Extract text from Gemini response format
-        if (isset($result['candidates'][0]['content']['parts'][0]['text'])) {
-            $mcqsjson = $result['candidates'][0]['content']['parts'][0]['text'];
-            $mcqs = json_decode($mcqsjson, true);
+        return self::parse_api_response($result);
+    }
 
-            if (json_last_error() === JSON_ERROR_NONE) {
-                return $mcqs;
+    /**
+     * Interpret a decoded Gemini response and return the question payload.
+     *
+     * Separated out so the failure branches can be tested without a live API
+     * call. Every branch must say what actually happened: the previous single
+     * "Invalid API response format" discarded the evidence needed to diagnose it.
+     *
+     * @param array $result Decoded Gemini response
+     * @return array Decoded question payload
+     * @throws \moodle_exception Describing which failure occurred
+     */
+    public static function parse_api_response(array $result) {
+        // The prompt itself was rejected, so there are no candidates at all.
+        if (isset($result['promptFeedback']['blockReason'])) {
+            throw new \moodle_exception('error:prompt_blocked', 'local_ai_quiz', '',
+                $result['promptFeedback']['blockReason']);
+        }
+
+        if (empty($result['candidates'][0])) {
+            throw new \moodle_exception('error:no_candidates', 'local_ai_quiz', '',
+                self::summarise_response($result));
+        }
+
+        $candidate = $result['candidates'][0];
+        $finishreason = $candidate['finishReason'] ?? '';
+
+        // Extract text from Gemini response format.
+        if (!isset($candidate['content']['parts'][0]['text'])) {
+            // A thinking model that runs out of budget returns a candidate with
+            // no parts whatsoever. Say so, instead of "invalid response format".
+            if ($finishreason === 'MAX_TOKENS') {
+                throw new \moodle_exception('error:response_truncated', 'local_ai_quiz', '',
+                    self::summarise_response($result));
+            }
+
+            if (in_array($finishreason, ['SAFETY', 'RECITATION', 'PROHIBITED_CONTENT', 'BLOCKLIST'], true)) {
+                throw new \moodle_exception('error:response_blocked', 'local_ai_quiz', '',
+                    $finishreason);
+            }
+
+            throw new \moodle_exception('error:invalid_api_response', 'local_ai_quiz', '',
+                self::summarise_response($result));
+        }
+
+        $mcqsjson = $candidate['content']['parts'][0]['text'];
+        $mcqs = json_decode($mcqsjson, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            // Cut off by the output limit: feedback cannot fix this, a smaller
+            // request can.
+            if ($finishreason === 'MAX_TOKENS') {
+                throw new \moodle_exception('error:response_truncated', 'local_ai_quiz', '',
+                    json_last_error_msg() . ' | ' . self::summarise_response($result));
+            }
+
+            // Generation finished but the output is not the JSON we asked for.
+            // This is the one case the model can genuinely repair, so keep the
+            // raw output for the repair loop to hand back.
+            throw new response_format_exception('error:invalid_api_response',
+                'The response was not valid JSON (' . json_last_error_msg() . ').',
+                $mcqsjson);
+        }
+
+        if (!is_array($mcqs)) {
+            throw new response_format_exception('error:invalid_api_response',
+                'The response decoded to a ' . gettype($mcqs) . ' rather than a JSON object.',
+                $mcqsjson);
+        }
+
+        return $mcqs;
+    }
+
+    /**
+     * Compact description of a Gemini response, for error detail and logs.
+     *
+     * Reports why generation stopped and how the token budget was spent, which is
+     * what distinguishes a truncated response from a blocked or malformed one.
+     *
+     * @param array $result Decoded Gemini response
+     * @return string One-line summary
+     */
+    private static function summarise_response(array $result) {
+        $bits = [];
+
+        $candidate = $result['candidates'][0] ?? null;
+        if ($candidate === null) {
+            $bits[] = 'candidates=none';
+        } else {
+            $bits[] = 'finishReason=' . ($candidate['finishReason'] ?? 'none');
+            $bits[] = 'parts=' . (isset($candidate['content']['parts'])
+                ? count($candidate['content']['parts']) : 'none');
+        }
+
+        $usage = $result['usageMetadata'] ?? [];
+        foreach (['promptTokenCount', 'candidatesTokenCount', 'thoughtsTokenCount', 'totalTokenCount'] as $key) {
+            if (isset($usage[$key])) {
+                $bits[] = $key . '=' . $usage[$key];
             }
         }
 
-        throw new \moodle_exception('error:invalid_api_response', 'local_ai_quiz');
+        return implode(' ', $bits);
     }
 
     /**
@@ -898,7 +1304,8 @@ PROMPT;
         ], $numquestions, $difficultymix, true, $multipleanswerconfig);
 
         if (!is_array($mcqs)) {
-            throw new \moodle_exception('error:invalid_api_response', 'local_ai_quiz');
+            throw new \moodle_exception('error:invalid_api_response', 'local_ai_quiz', '',
+                'The AI returned ' . gettype($mcqs) . ' rather than a question set.');
         }
 
         // The model is instructed to report an unreadable source rather than
