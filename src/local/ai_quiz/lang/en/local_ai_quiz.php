@@ -120,5 +120,37 @@ $string['error:pdf_extraction_failed'] = 'PDF extraction failed: {$a}';
 $string['error:invalid_question_format'] = 'Invalid question format: {$a}';
 $string['error:category_creation_failed'] = 'Failed to create question category';
 
+// Source grounding errors.
+$string['error:extraction_unavailable'] = 'Text could not be extracted from this document: {$a}';
+$string['error:binary_content'] = 'The document content could not be read as text: {$a}';
+$string['error:primary_doc_failed'] = 'Quiz generation was stopped because a primary document could not be read: {$a}<br><br>No questions were generated. Generating from only part of your material would produce a quiz that is not based on your document.';
+$string['error:no_usable_text'] = 'No readable text could be extracted from this file.';
+$string['error:unsupported_filetype'] = 'Unsupported file type: {$a}';
+$string['error:inline_too_large'] = 'The file is too large to send to the AI for reading. Install poppler-utils on the server for local text extraction, or use a page range to reduce the size.';
+$string['error:unreadable_source'] = 'The AI reported that the source material was unreadable, so no questions were generated: {$a}';
+$string['error:no_questions_generated'] = 'No questions could be generated from the source material. This usually means the document did not contain enough readable content.';
+
+// Source grounding warnings.
+$string['generationwarnings'] = 'Please review before importing';
+$string['warning:nativepdf_notoolchain'] = '<strong>{$a}</strong>: the server cannot extract PDF text locally (pdftotext is unavailable or exec() is disabled), so the PDF was sent to the AI to read directly. Questions cannot be automatically checked against the source. Ask your administrator to install poppler-utils to enable automatic checking.';
+$string['warning:nativepdf_notext'] = '<strong>{$a}</strong>: this PDF has no selectable text (it is most likely scanned), so it was sent to the AI to read directly. Questions cannot be automatically checked against the source.';
+$string['warning:nativepdf_pagerange'] = '<strong>{$a}</strong>: the page range was passed to the AI as an instruction rather than applied before sending, because the whole file had to be sent. The AI may not honour it exactly.';
+$string['warning:supporting_skipped'] = 'Supporting material <strong>{$a->file}</strong> was skipped: {$a->reason}';
+$string['warning:ungrounded_questions'] = '<strong>{$a->count} of {$a->total} questions could not be matched to your document.</strong> They are flagged below and are unselected by default. Check them carefully before importing - they may have been written from the AI\'s general knowledge rather than from your material.';
+$string['warning:fewer_questions'] = 'The AI produced {$a->got} questions instead of the {$a->asked} requested, because the source material did not support more. This is expected behaviour and is preferable to inventing questions.';
+
+// Grounding status shown in preview.
+$string['grounding:verified'] = 'Verified in source';
+$string['grounding:verified_help'] = 'A verbatim quote supporting this question was found in your document.';
+$string['grounding:ungrounded'] = 'Not found in source';
+$string['grounding:ungrounded_help'] = 'The supporting quote for this question could not be found in your document. It may have been written from general knowledge rather than from your material.';
+$string['grounding:unverifiable'] = 'Not checked';
+$string['grounding:unverifiable_help'] = 'This question could not be checked automatically because the source was read directly by the AI rather than extracted as text on the server.';
+$string['grounding:noquote'] = 'No source quote';
+$string['grounding:noquote_help'] = 'The AI did not supply a usable supporting quote for this question, so it could not be checked against your document.';
+$string['sourcequote'] = 'Source quote';
+$string['groundingsummary'] = '{$a->verified} of {$a->total} questions were verified against your document.';
+$string['groundingsummary_unchecked'] = 'Questions could not be automatically checked against your document. Review them against your material before importing.';
+
 // Privacy
 $string['privacy:metadata'] = 'The AI Quiz Generator plugin does not store any personal data. Files uploaded for quiz generation are processed temporarily and deleted immediately after.';

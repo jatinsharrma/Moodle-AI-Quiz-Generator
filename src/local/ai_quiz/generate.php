@@ -102,7 +102,11 @@ if ($mform->is_cancelled()) {
 
         $fs = get_file_storage();
         $usercontext = context_user::instance($USER->id);
-        $tempfiles = []; // Track all temp files for cleanup
+
+        // Per-request scratch directory. Using a shared $CFG->tempdir path meant
+        // two people uploading files with the same name overwrote each other,
+        // which silently produced a quiz built from somebody else's document.
+        $tempsubdir = make_temp_directory('local_ai_quiz/' . $USER->id . '_' . uniqid('', true));
 
         // Parse page ranges
         $primaryranges = parse_page_ranges_input($data->primarypageranges ?? '');
@@ -115,10 +119,9 @@ if ($mform->is_cancelled()) {
                 'filename', false);
 
             foreach ($files as $file) {
-                $filename = $file->get_filename();
-                $tempfile = $CFG->tempdir . '/' . $filename;
+                $filename = clean_param($file->get_filename(), PARAM_FILE);
+                $tempfile = $tempsubdir . '/' . $filename;
                 $file->copy_content_to($tempfile);
-                $tempfiles[] = $tempfile;
 
                 // Check if there's a page range for this file
                 $pagerange = $primaryranges[$filename] ?? null;
@@ -137,10 +140,9 @@ if ($mform->is_cancelled()) {
                 'filename', false);
 
             foreach ($files as $file) {
-                $filename = $file->get_filename();
-                $tempfile = $CFG->tempdir . '/' . $filename;
+                $filename = clean_param($file->get_filename(), PARAM_FILE);
+                $tempfile = $tempsubdir . '/' . $filename;
                 $file->copy_content_to($tempfile);
-                $tempfiles[] = $tempfile;
 
                 // Check if there's a page range for this file
                 $pagerange = $supportingranges[$filename] ?? null;
@@ -204,10 +206,12 @@ if ($mform->is_cancelled()) {
             $multipleanswerconfig
         );
 
-        // Clean up temp files
-        foreach ($tempfiles as $tempfile) {
-            @unlink($tempfile);
-        }
+        // Clean up the scratch directory.
+        remove_dir($tempsubdir);
+
+        // Carry non-fatal warnings (unreadable supporting files, questions that
+        // could not be matched to the source, etc.) through to the preview page.
+        $quizdata['metadata']['warnings'] = $generator->get_warnings();
 
         // Store questions temporarily for preview
         $sessionkey = md5(uniqid($USER->id, true));
@@ -233,9 +237,27 @@ if ($mform->is_cancelled()) {
         ]);
         redirect($previewurl);
 
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
+        // Always clear the scratch directory, including on failure.
+        if (!empty($tempsubdir) && is_dir($tempsubdir)) {
+            remove_dir($tempsubdir);
+        }
+
         echo $OUTPUT->header();
         echo $OUTPUT->notification($e->getMessage(), 'error');
+
+        // Surface anything the generator managed to report before failing.
+        if (!empty($generator)) {
+            foreach ($generator->get_warnings() as $warning) {
+                echo $OUTPUT->notification($warning, 'warning');
+            }
+        }
+
+        echo html_writer::link(
+            $PAGE->url,
+            get_string('back'),
+            ['class' => 'btn btn-secondary']
+        );
         echo $OUTPUT->footer();
         exit;
     }

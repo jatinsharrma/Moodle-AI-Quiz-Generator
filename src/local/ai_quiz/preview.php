@@ -10,6 +10,7 @@ require_once(__DIR__ . '/../../config.php');
 require_once($CFG->libdir . '/questionlib.php');
 
 use local_ai_quiz\question_bank_helper;
+use local_ai_quiz\grounding_validator;
 
 require_login();
 
@@ -153,6 +154,39 @@ echo html_writer::tag('p',
 );
 echo html_writer::end_div();
 
+// Warnings raised while preparing the source material.
+$warnings = $quizdata['metadata']['warnings'] ?? [];
+if (!empty($warnings)) {
+    echo html_writer::start_div('alert alert-warning');
+    echo html_writer::tag('strong', get_string('generationwarnings', 'local_ai_quiz'));
+    echo html_writer::start_tag('ul', ['class' => 'mb-0 mt-2']);
+    foreach ($warnings as $warning) {
+        echo html_writer::tag('li', $warning);
+    }
+    echo html_writer::end_tag('ul');
+    echo html_writer::end_div();
+}
+
+// How many questions we were able to trace back to the teacher's document.
+$summary = $quizdata['metadata']['grounding_summary'] ?? null;
+if ($summary) {
+    if (!empty($summary['checked'])) {
+        $alertclass = ($summary['verified'] === $summary['total']) ? 'alert-success' : 'alert-secondary';
+        echo html_writer::div(
+            get_string('groundingsummary', 'local_ai_quiz', (object)[
+                'verified' => $summary['verified'],
+                'total' => $summary['total'],
+            ]),
+            'alert ' . $alertclass
+        );
+    } else {
+        echo html_writer::div(
+            get_string('groundingsummary_unchecked', 'local_ai_quiz'),
+            'alert alert-secondary'
+        );
+    }
+}
+
 // Form
 echo html_writer::start_tag('form', [
     'method' => 'post',
@@ -192,18 +226,34 @@ echo html_writer::end_div();
 foreach ($quizdata['questions'] as $i => $q) {
     $qnum = $i + 1;
 
-    echo html_writer::start_div('card mb-3 question-card', ['data-qid' => $q['id']]);
-    echo html_writer::start_div('card-header bg-light');
+    // Grounding status decides both the styling and whether this question is
+    // selected by default. Questions we could not trace back to the teacher's
+    // document must be opted into deliberately, never imported by inertia.
+    $grounding = $q['grounding'] ?? grounding_validator::STATUS_UNVERIFIABLE;
+    $issuspect = grounding_validator::is_suspect($grounding);
+
+    $cardclass = 'card mb-3 question-card';
+    $headerclass = 'card-header bg-light';
+    if ($issuspect) {
+        $cardclass .= ' border-danger';
+        $headerclass = 'card-header bg-danger text-white';
+    }
+
+    echo html_writer::start_div($cardclass, ['data-qid' => $q['id']]);
+    echo html_writer::start_div($headerclass);
 
     // Checkbox
     echo html_writer::start_tag('label', ['class' => 'd-flex align-items-start']);
-    echo html_writer::empty_tag('input', [
+    $checkboxattrs = [
         'type' => 'checkbox',
         'name' => 'selected[]',
         'value' => $q['id'],
-        'checked' => 'checked',
         'class' => 'mr-2 mt-1 question-checkbox'
-    ]);
+    ];
+    if (!$issuspect) {
+        $checkboxattrs['checked'] = 'checked';
+    }
+    echo html_writer::empty_tag('input', $checkboxattrs);
 
     echo html_writer::start_div('flex-grow-1');
     echo html_writer::tag('strong', get_string('questionnum', 'local_ai_quiz', $qnum));
@@ -224,8 +274,33 @@ foreach ($quizdata['questions'] as $i => $q) {
         echo ' ';
         echo html_writer::tag('span', $q['topic'], ['class' => 'badge badge-info']);
     }
+
+    // Grounding badge - says whether this question came from the document.
+    $groundingbadges = [
+        grounding_validator::STATUS_VERIFIED => 'badge-success',
+        grounding_validator::STATUS_UNGROUNDED => 'badge-light text-danger',
+        grounding_validator::STATUS_UNVERIFIABLE => 'badge-secondary',
+        grounding_validator::STATUS_NOQUOTE => 'badge-light text-danger',
+    ];
+    $badgeclass = $groundingbadges[$grounding] ?? 'badge-secondary';
+    echo ' ';
+    echo html_writer::tag('span',
+        get_string('grounding:' . $grounding, 'local_ai_quiz'),
+        [
+            'class' => 'badge ' . $badgeclass,
+            'title' => get_string('grounding:' . $grounding . '_help', 'local_ai_quiz'),
+        ]
+    );
+
     echo html_writer::end_div();
     echo html_writer::end_tag('label');
+
+    if ($issuspect) {
+        echo html_writer::div(
+            get_string('grounding:' . $grounding . '_help', 'local_ai_quiz'),
+            'small mt-2'
+        );
+    }
 
     echo html_writer::end_div();
 
@@ -325,6 +400,17 @@ foreach ($quizdata['questions'] as $i => $q) {
         echo html_writer::start_div('mt-3 p-2 bg-light rounded');
         echo html_writer::tag('strong', get_string('explanation', 'local_ai_quiz') . ': ');
         echo html_writer::tag('span', $q['explanation'], ['class' => 'explanation-text']);
+        echo html_writer::end_div();
+    }
+
+    // The evidence the AI cited from the source document. Shown so the teacher
+    // can confirm the question really does come from their material.
+    if (!empty($q['source_quote'])) {
+        echo html_writer::start_div('mt-2 p-2 border-left border-' . ($issuspect ? 'danger' : 'success'),
+            ['style' => 'border-left-width:3px !important;']);
+        echo html_writer::tag('strong', get_string('sourcequote', 'local_ai_quiz') . ': ',
+            ['class' => 'small']);
+        echo html_writer::tag('em', s($q['source_quote']), ['class' => 'small source-quote']);
         echo html_writer::end_div();
     }
 
